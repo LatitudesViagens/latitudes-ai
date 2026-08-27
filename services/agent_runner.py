@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from dotenv import load_dotenv
+from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -14,6 +15,7 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 from latitudes_agent.agent import root_agent
 
+
 APP_NAME = "latitudes_ai"
 
 _session_service = InMemorySessionService()
@@ -25,10 +27,45 @@ _runner = Runner(
 )
 
 
+async def _restore_history(
+    session,
+    history: list[dict],
+) -> None:
+    for message in history:
+        role = message.get("role")
+        content = message.get("content", "").strip()
+
+        if not content or role not in {"user", "assistant"}:
+            continue
+
+        if role == "user":
+            author = "user"
+            content_role = "user"
+        else:
+            author = root_agent.name
+            content_role = "model"
+
+        history_event = Event(
+            author=author,
+            content=types.Content(
+                role=content_role,
+                parts=[
+                    types.Part(text=content),
+                ],
+            ),
+        )
+
+        await _session_service.append_event(
+            session,
+            history_event,
+        )
+
+
 async def ask_agent(
     user_id: str,
     conversation_id: str,
     question: str,
+    history: list[dict] | None = None,
 ) -> str:
     clean_question = question.strip()
 
@@ -42,11 +79,17 @@ async def ask_agent(
     )
 
     if session is None:
-        await _session_service.create_session(
+        session = await _session_service.create_session(
             app_name=APP_NAME,
             user_id=str(user_id),
             session_id=str(conversation_id),
         )
+
+        if history:
+            await _restore_history(
+                session=session,
+                history=history,
+            )
 
     user_message = types.Content(
         role="user",
