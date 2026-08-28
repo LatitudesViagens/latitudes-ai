@@ -73,3 +73,38 @@ def set_conversation_pinned(
         raise RuntimeError(
             "Não foi possível atualizar a conversa."
         )
+
+def rename_conversation(
+    client: Client,
+    conversation_id: str,
+    title: str,
+) -> dict:
+    clean_title = " ".join(title.split()).strip()
+
+    if not clean_title:
+        raise ValueError(
+            "O título da conversa não pode estar vazio."
+        )
+
+    if len(clean_title) > 80:
+        raise ValueError(
+            "O título da conversa deve ter no máximo 80 caracteres."
+        )
+
+    response = (
+        client.table("conversations")
+        .update(
+            {
+                "title": clean_title,
+            }
+        )
+        .eq("id", str(conversation_id))
+        .execute()
+    )
+
+    if not response.data:
+        raise RuntimeError(
+            "Não foi possível renomear a conversa."
+        )
+
+    return response.data[0]

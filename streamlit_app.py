@@ -13,6 +13,7 @@ from database.conversations import (
     create_conversation,
     delete_conversation,
     list_conversations,
+    rename_conversation,
     set_conversation_pinned,
 )
 from database.messages import list_messages
@@ -112,6 +113,7 @@ def initialize_session_state() -> None:
         "selected_conversation_id": None,
         "new_conversation_mode": False,
         "conversation_to_delete": None,
+        "conversation_to_rename": None,
         "scroll_to_bottom": False,
     }
 
@@ -321,30 +323,157 @@ def show_delete_conversation_dialog(
             st.rerun()
 
 
-def create_title_from_message(content: str) -> str:
-    clean_content = " ".join(content.split())
+def clear_conversation_rename() -> None:
+    st.session_state.conversation_to_rename = None
 
-    destination_match = re.search(
-        r"\b(?:para|por|em)\s+"
-        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÀ-ÿ'-]*)",
+
+@st.dialog(
+    "Renomear conversa",
+    icon=":material/edit:",
+    on_dismiss=clear_conversation_rename,
+)
+def show_rename_conversation_dialog(
+    client,
+    conversation: dict,
+) -> None:
+    current_title = str(conversation["title"])
+
+    with st.form(
+        f"rename_conversation_form_{conversation['id']}"
+    ):
+        new_title = st.text_input(
+            "Novo título",
+            value=current_title,
+            max_chars=80,
+        )
+
+        save_column, cancel_column = st.columns(2)
+
+        with save_column:
+            save_submitted = st.form_submit_button(
+                "Salvar",
+                type="primary",
+                use_container_width=True,
+            )
+
+        with cancel_column:
+            cancel_submitted = st.form_submit_button(
+                "Cancelar",
+                use_container_width=True,
+            )
+
+    if cancel_submitted:
+        st.session_state.conversation_to_rename = None
+        st.rerun()
+
+    if not save_submitted:
+        return
+
+    try:
+        rename_conversation(
+            client=client,
+            conversation_id=conversation["id"],
+            title=new_title,
+        )
+    except ValueError as error:
+        st.warning(str(error))
+    except Exception:
+        st.error(
+            "Não foi possível renomear a conversa."
+        )
+    else:
+        st.session_state.conversation_to_rename = None
+        st.rerun()
+
+def create_title_from_message(content: str) -> str:
+    clean_content = " ".join(content.split()).strip()
+
+    if not clean_content:
+        return "Nova conversa"
+
+    location_word = (
+        r"[A-ZÁÀÂÃÉÊÍÓÔÕÚÜÇ]"
+        r"[\wÀ-ÿ'-]*"
+    )
+    location_pattern = (
+        rf"({location_word}"
+        rf"(?:\s+(?:(?:de|da|do|das|dos|e)\s+)?"
+        rf"{location_word}){{0,2}})"
+    )
+
+    entry_match = re.search(
+        rf"\bentrada\s+(?:na|no|em)\s+{location_pattern}",
         clean_content,
     )
 
     if (
-        "roteiro" in clean_content.lower()
-        and destination_match is not None
+        entry_match is not None
+        and "requisit" in clean_content.lower()
     ):
-        return f"Roteiro de {destination_match.group(1)}"
+        return (
+            "Requisitos de entrada "
+            f"na {entry_match.group(1)}"
+        )
+
+    destination_match = re.search(
+        rf"\b(?:para|por|em|na|no)\s+{location_pattern}",
+        clean_content,
+    )
+
+    if destination_match is not None:
+        destination = destination_match.group(1)
+        lower_content = clean_content.lower()
+
+        if "roteiro" in lower_content:
+            return f"Roteiro de {destination}"
+
+        if "visto" in lower_content:
+            return f"Visto para {destination}"
+
+        if "hotel" in lower_content or "hospedagem" in lower_content:
+            return f"Hospedagem em {destination}"
+
+        if "restaurante" in lower_content or "gastronomia" in lower_content:
+            return f"Gastronomia em {destination}"
+
+    summarized_title = re.sub(
+        (
+            r"^(?:por favor,?\s*)?"
+            r"(?:pesquise(?:\s+na internet)?|"
+            r"explique|informe|resuma|mostre|"
+            r"quero saber|gostaria de saber|"
+            r"crie|faça)\s+"
+        ),
+        "",
+        clean_content,
+        flags=re.IGNORECASE,
+    )
+
+    summarized_title = re.sub(
+        r"^(?:quais?\s+(?:são|é)|o que é|como funciona)\s+",
+        "",
+        summarized_title,
+        flags=re.IGNORECASE,
+    )
+
+    summarized_title = summarized_title.rstrip(" .?!")
+
+    if summarized_title:
+        summarized_title = (
+            summarized_title[0].upper()
+            + summarized_title[1:]
+        )
+    else:
+        summarized_title = "Nova conversa"
 
     maximum_length = 48
 
-    if len(clean_content) <= maximum_length:
-        return clean_content
+    if len(summarized_title) <= maximum_length:
+        return summarized_title
 
-    shortened_title = clean_content[:maximum_length].rsplit(
-        " ",
-        1,
-    )[0]
+    shortened_title = summarized_title[
+        :maximum_length
+    ].rsplit(" ", 1)[0]
 
     return f"{shortened_title}…"
 
@@ -641,6 +770,7 @@ def show_authenticated_area() -> None:
             """,
         )
 
+
         if st.button(
             "＋ Nova conversa",
             use_container_width=True,
@@ -739,6 +869,19 @@ def show_authenticated_area() -> None:
                         st.rerun()
 
                     if st.button(
+                        "Renomear conversa",
+                        icon=":material/edit:",
+                        key=f"rename_conversation_{conversation_id}",
+                        type="tertiary",
+                        use_container_width=True,
+                    ):
+                        st.session_state.conversation_to_rename = (
+                            conversation_id
+                        )
+                        st.session_state.conversation_to_delete = None
+                        st.rerun()
+
+                    if st.button(
                         "Excluir conversa",
                         icon=":material/delete:",
                         key=f"delete_conversation_{conversation_id}",
@@ -777,6 +920,26 @@ def show_authenticated_area() -> None:
 
         if target_conversation is not None:
             show_delete_conversation_dialog(
+                client=client,
+                conversation=target_conversation,
+            )
+
+    conversation_to_rename = (
+        st.session_state.conversation_to_rename
+    )
+
+    if conversation_to_rename is not None:
+        target_conversation = next(
+            (
+                conversation
+                for conversation in conversations
+                if conversation["id"] == conversation_to_rename
+            ),
+            None,
+        )
+
+        if target_conversation is not None:
+            show_rename_conversation_dialog(
                 client=client,
                 conversation=target_conversation,
             )
