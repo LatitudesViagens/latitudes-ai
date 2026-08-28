@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -56,11 +56,66 @@ async def _restore_history(
         )
 
 
+def _collect_web_sources(
+    event: Event,
+    source_collector: list[dict],
+) -> None:
+    existing_urls = {
+        source.get("url")
+        for source in source_collector
+        if source.get("url")
+    }
+
+    for function_response in event.get_function_responses():
+        if function_response.name != "search_web":
+            continue
+
+        response_data = function_response.response
+
+        if not isinstance(response_data, Mapping):
+            continue
+
+        nested_result = response_data.get("result")
+
+        if isinstance(nested_result, Mapping):
+            response_data = nested_result
+
+        results = response_data.get("results", [])
+
+        if not isinstance(results, list):
+            continue
+
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+
+            url = str(result.get("url", "")).strip()
+
+            if not url or url in existing_urls:
+                continue
+
+            source = {
+                "type": "web",
+                "title": str(result.get("title", "")).strip(),
+                "url": url,
+                "content": str(result.get("content", "")).strip(),
+            }
+
+            score = result.get("score")
+
+            if isinstance(score, int | float):
+                source["score"] = score
+
+            source_collector.append(source)
+            existing_urls.add(url)
+
+
 async def stream_agent(
     user_id: str,
     conversation_id: str,
     question: str,
     history: list[dict] | None = None,
+    source_collector: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     clean_question = question.strip()
 
@@ -107,6 +162,12 @@ async def stream_agent(
         new_message=user_message,
         run_config=run_config,
     ):
+        if source_collector is not None:
+            _collect_web_sources(
+                event=event,
+                source_collector=source_collector,
+            )
+
         if not event.content:
             continue
 
@@ -151,6 +212,7 @@ async def ask_agent(
     conversation_id: str,
     question: str,
     history: list[dict] | None = None,
+    source_collector: list[dict] | None = None,
 ) -> str:
     response_chunks = []
 
@@ -159,6 +221,7 @@ async def ask_agent(
         conversation_id=conversation_id,
         question=question,
         history=history,
+        source_collector=source_collector,
     ):
         response_chunks.append(chunk)
 

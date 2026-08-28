@@ -55,11 +55,14 @@ async def process_message(
         content=content,
     )
 
+    sources = []
+
     assistant_content = await ask_agent(
         user_id=str(user_id),
         conversation_id=str(conversation_id),
         question=clean_content,
         history=agent_history,
+        source_collector=sources,
     )
 
     assistant_message = add_message(
@@ -67,6 +70,7 @@ async def process_message(
         conversation_id=conversation_id,
         role="assistant",
         content=assistant_content,
+        sources=sources,
     )
 
     return {
@@ -88,12 +92,14 @@ async def process_message_stream(
     )
 
     response_chunks = []
+    sources = []
 
     async for chunk in stream_agent(
         user_id=str(user_id),
         conversation_id=str(conversation_id),
         question=clean_content,
         history=agent_history,
+        source_collector=sources,
     ):
         response_chunks.append(chunk)
         yield chunk
@@ -110,4 +116,5 @@ async def process_message_stream(
         conversation_id=conversation_id,
         role="assistant",
         content=assistant_content,
+        sources=sources,
     )
