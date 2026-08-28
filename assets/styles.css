@@ -1,0 +1,394 @@
+:root {
+    --latitudes-olive: #94825D;
+    --latitudes-olive-dark: #625234;
+    --latitudes-orange: #F6862F;
+    --latitudes-gold: #FEBA12;
+    --latitudes-ivory: #F6F4F0;
+    --latitudes-ivory-dark: #F2EFE6;
+    --latitudes-text: #333333;
+    --latitudes-muted: #9B9B9C;
+    --latitudes-white: #FFFFFF;
+    --latitudes-border: #DED8CA;
+}
+
+/* Estrutura geral */
+
+html,
+body,
+[class*="css"] {
+    font-family: Arial, Helvetica, sans-serif;
+    color: var(--latitudes-text);
+}
+
+h1,
+h2,
+h3 {
+    font-family: Georgia, "Times New Roman", serif !important;
+    font-weight: 400 !important;
+    color: var(--latitudes-text);
+}
+
+[data-testid="stAppViewContainer"] {
+    background: var(--latitudes-ivory);
+}
+
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+[data-testid="stMainBlockContainer"] {
+    max-width: 1440px;
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+}
+
+/* Botões e campos */
+
+.stButton > button,
+.stFormSubmitButton > button {
+    border-radius: 8px;
+    min-height: 44px;
+    transition:
+        background-color 0.2s ease,
+        border-color 0.2s ease,
+        color 0.2s ease;
+}
+
+.stFormSubmitButton > button {
+    background: var(--latitudes-olive);
+    border-color: var(--latitudes-olive);
+    color: var(--latitudes-white);
+    font-weight: 600;
+}
+
+.stFormSubmitButton > button:hover {
+    background: var(--latitudes-olive-dark);
+    border-color: var(--latitudes-olive-dark);
+    color: var(--latitudes-white);
+}
+
+[data-testid="stTextInput"] input {
+    min-height: 46px;
+    border-radius: 8px;
+    border: 1px solid var(--latitudes-border);
+    background: var(--latitudes-white);
+}
+
+[data-testid="stTextInput"] input:focus {
+    border-color: var(--latitudes-olive);
+    box-shadow: 0 0 0 1px var(--latitudes-olive);
+}
+
+div[data-testid="stForm"] {
+    border: 0;
+    background: transparent;
+    padding: 0;
+}
+
+/* Tela de login */
+
+.login-visual {
+    position: relative;
+    min-height: 690px;
+    overflow: hidden;
+    border-radius: 18px;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    box-shadow: 0 16px 45px rgba(98, 82, 52, 0.16);
+}
+
+.login-visual::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(
+            180deg,
+            rgba(45, 40, 26, 0.62) 0%,
+            rgba(45, 40, 26, 0.20) 45%,
+            rgba(45, 40, 26, 0.72) 100%
+        );
+}
+
+.login-brand {
+    position: absolute;
+    z-index: 1;
+    top: 42px;
+    left: 42px;
+    color: var(--latitudes-white);
+}
+
+.login-brand-flower {
+    display: block;
+    width: 62px;
+    height: auto;
+    margin: 0 auto 4px;
+}
+
+.login-brand-name {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 32px;
+    letter-spacing: 0.04em;
+}
+
+.login-brand-signature {
+    display: block;
+    margin-top: 3px;
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.login-visual-copy {
+    position: absolute;
+    z-index: 1;
+    right: 42px;
+    bottom: 42px;
+    left: 42px;
+    max-width: 480px;
+    color: var(--latitudes-white);
+}
+
+.login-visual-copy strong {
+    display: block;
+    margin-bottom: 10px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 28px;
+    font-weight: 400;
+}
+
+.login-visual-copy span {
+    font-size: 15px;
+    line-height: 1.6;
+    opacity: 0.88;
+}
+
+.login-heading {
+    margin-top: 120px;
+}
+
+.login-heading h1 {
+    margin-bottom: 10px;
+    font-size: 46px;
+    line-height: 1.08;
+    font-family: Georgia, "Times New Roman", serif !important;
+    font-weight: 400 !important;
+}
+
+.login-heading p {
+    margin-bottom: 38px;
+    color: var(--latitudes-muted);
+    font-size: 16px;
+}
+
+.login-footer {
+    margin-top: 130px;
+    color: var(--latitudes-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+/* Barra lateral */
+
+[data-testid="stSidebar"] {
+    background: var(--latitudes-olive-dark);
+    border-right: 0;
+}
+
+[data-testid="stSidebar"] * {
+    color: var(--latitudes-white);
+}
+
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    color: rgba(255, 255, 255, 0.68);
+}
+
+[data-testid="stSidebar"] .stButton > button {
+    width: 100%;
+    justify-content: flex-start;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    color: var(--latitudes-white);
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.44);
+    color: var(--latitudes-white);
+}
+
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+    background: var(--latitudes-olive);
+    border-color: var(--latitudes-olive);
+}
+
+.sidebar-brand {
+    margin: 6px 0 26px;
+    text-align: center;
+}
+
+.sidebar-flower {
+    width: 54px;
+    height: auto;
+    margin-bottom: 4px;
+}
+
+.sidebar-name {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 25px;
+    letter-spacing: 0.04em;
+}
+
+.sidebar-ai {
+    color: var(--latitudes-gold);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+}
+
+/* Área de chat */
+
+.chat-header {
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--latitudes-border);
+}
+
+.chat-header h1 {
+    margin: 0;
+    font-size: 34px;
+}
+
+.chat-header p {
+    margin: 7px 0 0;
+    color: var(--latitudes-muted);
+}
+
+[data-testid="stChatMessage"] {
+    margin-bottom: 14px;
+    padding: 16px 18px;
+    border: 1px solid var(--latitudes-border);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.72);
+}
+
+[data-testid="stChatInput"] {
+    border: 1px solid var(--latitudes-border);
+    border-radius: 12px;
+    background: var(--latitudes-white);
+    box-shadow: 0 8px 26px rgba(98, 82, 52, 0.08);
+}
+
+[data-testid="stChatInput"] textarea {
+    color: var(--latitudes-text);
+}
+
+[data-testid="stChatInput"] button {
+    color: var(--latitudes-orange);
+}
+
+/* Mensagens e avisos */
+
+[data-testid="stAlert"] {
+    border-radius: 10px;
+}
+
+hr {
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* Responsividade */
+
+@media (max-width: 900px) {
+    .login-visual {
+        min-height: 390px;
+    }
+
+    .login-heading {
+        margin-top: 30px;
+    }
+
+    .login-footer {
+        margin-top: 50px;
+    }
+}
+
+/* Layout aprovado — referência visual oficial */
+
+[data-testid="stMainBlockContainer"] {
+    max-width: 1120px !important;
+    padding: 2.5rem 1rem !important;
+}
+
+[data-testid="stHorizontalBlock"]:has(.login-visual) {
+    gap: 0 !important;
+    min-height: 720px;
+    overflow: hidden;
+    border: 1px solid rgba(98, 82, 52, 0.10);
+    border-radius: 16px;
+    background: #FFFFFF;
+    box-shadow: 0 14px 45px rgba(98, 82, 52, 0.14);
+}
+
+[data-testid="stHorizontalBlock"]:has(.login-visual)
+> [data-testid="stColumn"] {
+    margin: 0 !important;
+    min-width: 0 !important;
+}
+
+[data-testid="stHorizontalBlock"]:has(.login-visual)
+> [data-testid="stColumn"]:last-child {
+    padding: 0 58px;
+    background: #FFFFFF;
+}
+
+.login-visual {
+    min-height: 720px !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+.login-brand {
+    top: 42px !important;
+    right: 0 !important;
+    left: 0 !important;
+    text-align: center;
+}
+
+.login-brand-flower {
+    width: 58px;
+}
+
+.login-heading {
+    margin-top: 155px !important;
+}
+
+.login-heading h1 {
+    margin-bottom: 12px;
+    font-size: 43px !important;
+    line-height: 1.08;
+}
+
+.login-heading p {
+    margin-bottom: 36px;
+}
+
+.login-footer {
+    margin-top: 145px !important;
+}
+
+/* E-mail do usuário na barra lateral */
+
+[data-testid="stSidebar"] a,
+[data-testid="stSidebar"] a:visited,
+[data-testid="stSidebar"] a:hover {
+    color: #FFFFFF !important;
+    text-decoration: none !important;
+}
+
+/* Oculta a instrução automática dos campos do formulário */
+
+[data-testid="InputInstructions"] {
+    display: none !important;
+}

@@ -1282,7 +1282,7 @@ protobuf==6.33.6
     #   grpcio-status
     #   opentelemetry-proto
     #   proto-plus
-pyarrow==25.0.0
+pyarrow==25.0.1
     # via
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)

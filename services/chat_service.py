@@ -1,15 +1,16 @@
+from collections.abc import AsyncIterator
+
 from supabase import Client
 
 from database.messages import add_message, list_messages
-from services.agent_runner import ask_agent
+from services.agent_runner import ask_agent, stream_agent
 
 
-async def process_message(
+def _prepare_message(
     client: Client,
-    user_id: str,
     conversation_id: str,
     content: str,
-) -> dict:
+) -> tuple[dict, list[dict], str]:
     clean_content = content.strip()
 
     if not clean_content:
@@ -39,6 +40,21 @@ async def process_message(
         )
         agent_history = history
 
+    return user_message, agent_history, clean_content
+
+
+async def process_message(
+    client: Client,
+    user_id: str,
+    conversation_id: str,
+    content: str,
+) -> dict:
+    user_message, agent_history, clean_content = _prepare_message(
+        client=client,
+        conversation_id=conversation_id,
+        content=content,
+    )
+
     assistant_content = await ask_agent(
         user_id=str(user_id),
         conversation_id=str(conversation_id),
@@ -57,3 +73,41 @@ async def process_message(
         "user_message": user_message,
         "assistant_message": assistant_message,
     }
+
+
+async def process_message_stream(
+    client: Client,
+    user_id: str,
+    conversation_id: str,
+    content: str,
+) -> AsyncIterator[str]:
+    _, agent_history, clean_content = _prepare_message(
+        client=client,
+        conversation_id=conversation_id,
+        content=content,
+    )
+
+    response_chunks = []
+
+    async for chunk in stream_agent(
+        user_id=str(user_id),
+        conversation_id=str(conversation_id),
+        question=clean_content,
+        history=agent_history,
+    ):
+        response_chunks.append(chunk)
+        yield chunk
+
+    assistant_content = "".join(response_chunks).strip()
+
+    if not assistant_content:
+        raise RuntimeError(
+            "O agente não retornou uma resposta final."
+        )
+
+    add_message(
+        client=client,
+        conversation_id=conversation_id,
+        role="assistant",
+        content=assistant_content,
+    )
