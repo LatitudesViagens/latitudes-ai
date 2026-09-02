@@ -392,3 +392,52 @@ hr {
 [data-testid="InputInstructions"] {
     display: none !important;
 }
+
+/* Linha de conversa na barra lateral */
+
+[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 4px !important;
+}
+
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"] {
+    min-width: 0 !important;
+}
+
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"]:nth-child(2)
+.stButton > button,
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"]:nth-child(3)
+.stButton > button {
+    min-width: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    justify-content: center !important;
+    border-color: transparent !important;
+}
+
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"]:nth-child(2)
+.stButton > button:disabled {
+    opacity: 0.85 !important;
+}
+
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"]:nth-child(3)
+.stButton > button {
+    opacity: 0.85;
+}
+
+[data-testid="stSidebar"]
+[data-testid="stHorizontalBlock"]
+> [data-testid="stColumn"]:nth-child(3)
+.stButton > button:hover {
+    opacity: 1;
+}

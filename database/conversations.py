@@ -108,3 +108,34 @@ def rename_conversation(
         )
 
     return response.data[0]
+
+ALLOWED_VISIBILITIES = {"private", "public"}
+
+
+def set_conversation_visibility(
+    client: Client,
+    conversation_id: str,
+    visibility: str,
+) -> dict:
+    if visibility not in ALLOWED_VISIBILITIES:
+        raise ValueError(
+            "A visibilidade deve ser private ou public."
+        )
+
+    response = (
+        client.table("conversations")
+        .update(
+            {
+                "visibility": visibility,
+            }
+        )
+        .eq("id", str(conversation_id))
+        .execute()
+    )
+
+    if not response.data:
+        raise RuntimeError(
+            "Não foi possível alterar a visibilidade da conversa."
+        )
+
+    return response.data[0]

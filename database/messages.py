@@ -10,6 +10,7 @@ def add_message(
     role: str,
     content: str,
     sources: list[dict] | None = None,
+    attachments: list[dict] | None = None,
 ) -> dict:
     if role not in ALLOWED_ROLES:
         raise ValueError(f"Tipo de mensagem inválido: {role}")
@@ -27,6 +28,9 @@ def add_message(
 
     if sources is not None:
         message_data["sources"] = sources
+
+    if attachments is not None:
+        message_data["attachments"] = attachments
 
     response = (
         client.table("messages")

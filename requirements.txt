@@ -1,3 +1,7 @@
-google-adk==2.7.1
+﻿google-adk==2.7.1
 supabase==2.31.0
-streamlit==1.62.0tavily-python==0.8.0
+streamlit==1.62.0
+tavily-python==0.8.0
+python-dotenv==1.2.2
+Pillow==12.3.0
+streamlit-cookies-manager-v2==0.3.1
