@@ -120,7 +120,7 @@ root_agent = Agent(
 fallback_agent = Agent(
     name="latitudes_assistant_fallback",
     model=Gemini(
-        model="gemini-3.6-flash",
+        model="gemini-3.5-flash-lite",
         retry_options=NO_INTERNAL_RETRY,
     ),
     description=root_agent.description,

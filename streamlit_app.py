@@ -170,11 +170,26 @@ def initialize_session_state() -> None:
         "conversation_visibility_target": None,
         "message_to_publish": None,
         "scroll_to_bottom": False,
+        "cookies_save_pending": False,
     }
 
     for key, value in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+def mark_cookies_for_save() -> None:
+    """Marca alterações para serem enviadas em um único save()."""
+    st.session_state.cookies_save_pending = True
+
+
+def flush_cookie_changes() -> None:
+    """Renderiza o componente de salvamento no máximo uma vez por fluxo."""
+    if not st.session_state.cookies_save_pending:
+        return
+
+    cookies.save()
+    st.session_state.cookies_save_pending = False
 
 
 def clear_persistent_authentication() -> None:
@@ -189,10 +204,15 @@ def clear_persistent_authentication() -> None:
             cookies_changed = True
 
     if cookies_changed:
-        cookies.save()
+        mark_cookies_for_save()
+        flush_cookie_changes()
 
 
-def persist_authentication(client) -> None:
+def persist_authentication(
+    client,
+    *,
+    save_immediately: bool = True,
+) -> None:
     session = client.auth.get_session()
 
     if session is None:
@@ -206,7 +226,10 @@ def persist_authentication(client) -> None:
     }
 
     cookies[AUTH_COOKIE_KEY] = json.dumps(session_data)
-    cookies.save()
+    mark_cookies_for_save()
+
+    if save_immediately:
+        flush_cookie_changes()
 
 
 def restore_authentication() -> None:
@@ -255,7 +278,13 @@ def restore_authentication() -> None:
                 selected_conversation_id
             )
 
-        persist_authentication(client)
+        # set_session() pode renovar os tokens. Mantemos a atualização
+        # pendente e salvamos junto com o cookie da conversa selecionada,
+        # evitando duas instâncias do componente no mesmo ciclo.
+        persist_authentication(
+            client,
+            save_immediately=False,
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         clear_persistent_authentication()
     except Exception:
@@ -271,18 +300,31 @@ def sync_selected_conversation_cookie() -> None:
         SELECTED_CONVERSATION_COOKIE_KEY
     )
 
+    # Enquanto a tela de nova conversa ainda está vazia, preservamos a
+    # seleção anterior no cookie. O novo ID só é persistido depois que a
+    # conversa for realmente criada.
+    if (
+        st.session_state.new_conversation_mode
+        and selected_conversation_id is None
+    ):
+        flush_cookie_changes()
+        return
+
     if selected_conversation_id is None:
         if stored_conversation_id is not None:
             del cookies[SELECTED_CONVERSATION_COOKIE_KEY]
-            cookies.save()
+            mark_cookies_for_save()
 
+        flush_cookie_changes()
         return
 
     selected_value = str(selected_conversation_id)
 
     if stored_conversation_id != selected_value:
         cookies[SELECTED_CONVERSATION_COOKIE_KEY] = selected_value
-        cookies.save()
+        mark_cookies_for_save()
+
+    flush_cookie_changes()
 
 
 def show_login() -> None:
@@ -1915,6 +1957,11 @@ def show_authenticated_area() -> None:
                 )
                 st.session_state.new_conversation_mode = False
                 st.session_state.scroll_to_bottom = True
+
+                # Persiste a conversa antes de iniciar chamadas externas.
+                # Se o WebSocket cair durante a resposta, o recarregamento
+                # volta para esta conversa e exibe a mensagem pendente.
+                sync_selected_conversation_cookie()
 
                 display_user_message(
                     prompt,
