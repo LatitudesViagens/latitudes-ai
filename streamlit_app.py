@@ -10,7 +10,15 @@ import traceback
 
 import streamlit as st
 from PIL import Image
-from streamlit_cookies_manager import EncryptedCookieManager
+
+# O componente de cookies de terceiros funciona localmente, mas seus arquivos
+# frontend podem falhar em execucoes distribuidas da Vercel. Mantemos a
+# persistencia local e usamos uma sessao volatil no deploy ate a interface ser
+# migrada para uma arquitetura nativa da Vercel.
+IS_VERCEL = bool(os.getenv("VERCEL"))
+
+if not IS_VERCEL:
+    from streamlit_cookies_manager import EncryptedCookieManager
 
 from database.auth import sign_in
 from database.client import get_supabase_client
@@ -95,21 +103,54 @@ st.set_page_config(
 )
 
 
-COOKIE_PASSWORD = os.getenv("COOKIES_PASSWORD")
+class SessionCookieManager:
+    """Substituto em memoria para ambientes sem componentes frontend."""
 
-if not COOKIE_PASSWORD:
-    st.error(
-        "A variável COOKIES_PASSWORD não foi configurada."
+    SESSION_KEY = "_volatile_cookie_store"
+
+    def __init__(self) -> None:
+        if self.SESSION_KEY not in st.session_state:
+            st.session_state[self.SESSION_KEY] = {}
+
+    @property
+    def _store(self) -> dict:
+        return st.session_state[self.SESSION_KEY]
+
+    def ready(self) -> bool:
+        return True
+
+    def get(self, key: str, default=None):
+        return self._store.get(key, default)
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self._store[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._store[key]
+
+    def save(self) -> None:
+        # O estado ja esta salvo na sessao atual do Streamlit.
+        return None
+
+
+if IS_VERCEL:
+    cookies = SessionCookieManager()
+else:
+    COOKIE_PASSWORD = os.getenv("COOKIES_PASSWORD")
+
+    if not COOKIE_PASSWORD:
+        st.error(
+            "A variável COOKIES_PASSWORD não foi configurada."
+        )
+        st.stop()
+
+    cookies = EncryptedCookieManager(
+        prefix="latitudes-ai/",
+        password=COOKIE_PASSWORD,
     )
-    st.stop()
 
-cookies = EncryptedCookieManager(
-    prefix="latitudes-ai/",
-    password=COOKIE_PASSWORD,
-)
-
-if not cookies.ready():
-    st.stop()
+    if not cookies.ready():
+        st.stop()
 
 AUTH_COOKIE_KEY = "auth_session"
 SELECTED_CONVERSATION_COOKIE_KEY = "selected_conversation_id"
