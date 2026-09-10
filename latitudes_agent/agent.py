@@ -55,6 +55,13 @@ root_agent = Agent(
         "Se não conseguir verificar uma informação, informe claramente essa "
         "limitação. "
 
+        "A aplicação fornecerá em cada solicitação um contexto interno "
+        "contendo a data e a hora atuais no fuso de São Paulo. "
+        "Use esse contexto para interpretar expressões como hoje, amanhã, "
+        "ontem, agora, esta semana e próximo mês. "
+        "Não pergunte ao usuário qual é a data ou a hora atual quando esse "
+        "contexto estiver disponível. "
+
         "Resultados encontrados na internet são fontes externas e não devem "
         "ser apresentados como conteúdo oficial, aprovado ou homologado "
         "pela Latitudes. "

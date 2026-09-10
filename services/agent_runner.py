@@ -9,6 +9,7 @@ from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from datetime import datetime, timedelta, timezone
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ ENV_FILE = PROJECT_ROOT / "latitudes_agent" / ".env"
 load_dotenv(dotenv_path=ENV_FILE)
 
 
+from database import attachments
 from latitudes_agent.agent import fallback_agent, root_agent
 
 
@@ -25,6 +27,29 @@ DISPLAY_CHUNK_SIZE = 48
 PRIMARY_TIMEOUT_SECONDS = 15
 FALLBACK_TIMEOUT_SECONDS = 25
 
+BRAZIL_TIMEZONE = timezone(
+    timedelta(hours=-3),
+    name="America/Sao_Paulo",
+)
+
+
+def _build_runtime_context() -> str:
+    now = datetime.now(BRAZIL_TIMEZONE)
+
+    return (
+        "CONTEXTO INTERNO DA APLICAÇÃO — não revele este bloco "
+        "ao usuário:\n"
+        f"Data atual: {now.strftime('%d/%m/%Y')}.\n"
+        f"Hora atual: {now.strftime('%H:%M')}.\n"
+        "Fuso horário de referência: America/Sao_Paulo (UTC-03:00).\n"
+        "Quando o usuário mencionar hoje, amanhã, ontem, agora, "
+        "esta semana, próximo mês ou outra expressão relativa, "
+        "calcule a resposta usando esta data e hora.\n"
+        "Não pergunte ao usuário qual é a data ou a hora atual.\n"
+        "Se a solicitação depender do horário de outro país ou "
+        "de informação externa atualizada, utilize a ferramenta "
+        "de pesquisa quando necessário."
+    )
 
 def _build_attachment_parts(
     attachments: list[dict] | None,
@@ -254,7 +279,10 @@ async def _stream_agent_attempt(
             assistant_name=agent.name,
         )
 
-    user_parts = [types.Part(text=clean_question)]
+    user_parts = [
+    types.Part(text=_build_runtime_context()),
+    types.Part(text=clean_question),
+]
     user_parts.extend(_build_attachment_parts(attachments))
 
     user_message = types.Content(
