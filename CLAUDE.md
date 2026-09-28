@@ -70,7 +70,7 @@ Carregadas de `latitudes_agent/.env` (não da raiz) por cada módulo via `load_d
 
 ## Regras de trabalho
 
-- Todo arquivo em UTF-8. Nunca reescreva um arquivo inteiro quando uma edição pontual resolve. Já há texto corrompido (mojibake) em `services/agent_runner.py`; no PowerShell leia arquivos com `Get-Content -Encoding utf8`.
+- Todo arquivo em UTF-8. Nunca reescreva um arquivo inteiro quando uma edição pontual resolve — reescritas completas já causaram mojibake (`Ã§` no lugar de `ç`). No PowerShell leia arquivos com `Get-Content -Encoding utf8`; alguns arquivos têm BOM UTF-8, preserve-o.
 - Nunca leia, imprima ou copie `.env`, `.env.local`, `.streamlit/secrets.toml` ou qualquer segredo. Para saber quais variáveis existem, consulte o código ou esta lista.
 - Qualquer mudança em RLS, políticas de Storage ou migrações do Supabase exige confirmação explícita da Isabelle antes de ser feita.
 - Não altere a lógica de privacidade (visibilidade de conversas, acesso a anexos) nem da memória coletiva (publicação/reuso de roteiros, instruções do agente sobre contexto compartilhado) sem avisar antes e explicar o impacto.
