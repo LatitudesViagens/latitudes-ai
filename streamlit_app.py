@@ -1322,7 +1322,7 @@ def stream_assistant_response(
 ) -> bool:
     with st.chat_message(
         "assistant",
-        avatar=page_icon,
+        avatar="/app/static/agora-avatar-v2.png",
     ):
         status_placeholder = st.empty()
         status_placeholder.html(
@@ -2095,7 +2095,7 @@ def show_authenticated_area() -> None:
         elif role == "assistant":
             with st.chat_message(
                 "assistant",
-                avatar=page_icon,
+                avatar="/app/static/agora-avatar-v2.png",
             ):
                 st.markdown(content)
 
