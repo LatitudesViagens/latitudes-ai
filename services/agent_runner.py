@@ -26,6 +26,9 @@ APP_NAME = "latitudes_ai"
 DISPLAY_CHUNK_SIZE = 48
 PRIMARY_TIMEOUT_SECONDS = 15
 FALLBACK_TIMEOUT_SECONDS = 25
+ATTACHMENT_PRIMARY_TIMEOUT_SECONDS = 20
+ATTACHMENT_FALLBACK_TIMEOUT_SECONDS = 40
+FALLBACK_RETRY_DELAY_SECONDS = 2
 
 BRAZIL_TIMEZONE = timezone(
     timedelta(hours=-3),
@@ -363,9 +366,20 @@ async def stream_agent(
     if not clean_question:
         raise ValueError("A pergunta não pode estar vazia.")
 
+    # Chamadas com anexos demoram mais no provedor, principalmente sob carga.
+    if _has_multimodal_content(history, attachments):
+        primary_timeout = ATTACHMENT_PRIMARY_TIMEOUT_SECONDS
+        fallback_timeout = ATTACHMENT_FALLBACK_TIMEOUT_SECONDS
+    else:
+        primary_timeout = PRIMARY_TIMEOUT_SECONDS
+        fallback_timeout = FALLBACK_TIMEOUT_SECONDS
+
+    # A terceira tentativa repete o fallback: sob alta demanda, o provedor
+    # costuma recusar uma chamada (503/429) e aceitar a seguinte.
     agent_attempts = (
-        (root_agent, PRIMARY_TIMEOUT_SECONDS),
-        (fallback_agent, FALLBACK_TIMEOUT_SECONDS),
+        (root_agent, primary_timeout),
+        (fallback_agent, fallback_timeout),
+        (fallback_agent, fallback_timeout),
     )
 
     last_error = None
@@ -374,11 +388,20 @@ async def stream_agent(
         agent_attempts
     ):
         attempt_chunks = []
+        is_last_attempt = (
+            attempt_index == len(agent_attempts) - 1
+        )
+        next_attempt_repeats_agent = (
+            not is_last_attempt
+            and agent_attempts[attempt_index + 1][0] is agent
+        )
+
         attempt_started_at = time.perf_counter()
 
         print(
             f"[PERF] agent_attempt_start "
             f"agent={agent.name} "
+            f"attempt={attempt_index + 1} "
             f"timeout={timeout_seconds}s",
             flush=True,
         )
@@ -442,11 +465,9 @@ async def stream_agent(
                     source_count_before_attempt:
                 ]
 
-            is_last_attempt = (
-                attempt_index == len(agent_attempts) - 1
-            )
-
-            if is_last_attempt:
+            # Repetir o mesmo modelo só compensa após uma recusa rápida,
+            # não depois de esgotar o tempo inteiro da tentativa.
+            if is_last_attempt or next_attempt_repeats_agent:
                 raise TimeoutError(
                     "Os modelos excederam o tempo máximo de resposta."
                 ) from error
@@ -471,15 +492,14 @@ async def stream_agent(
                     source_count_before_attempt:
                 ]
 
-            is_last_attempt = (
-                attempt_index == len(agent_attempts) - 1
-            )
-
             if (
                 is_last_attempt
                 or not _is_retryable_model_error(error)
             ):
                 raise
+
+            if next_attempt_repeats_agent:
+                await asyncio.sleep(FALLBACK_RETRY_DELAY_SECONDS)
 
     if last_error is not None:
         raise last_error

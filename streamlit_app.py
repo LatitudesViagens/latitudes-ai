@@ -1427,7 +1427,12 @@ def stream_assistant_response(
 
             error_text = str(error).lower()
 
-            if (
+            if isinstance(error, TimeoutError):
+                error_message = (
+                    "A IA demorou mais que o esperado para responder. "
+                    "A conversa foi liberada; tente novamente em instantes."
+                )
+            elif (
                 "429" in error_text
                 or "resource_exhausted" in error_text
                 or "quota exceeded" in error_text
