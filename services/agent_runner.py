@@ -298,6 +298,33 @@ def _fix_file_position(content: str) -> str:
     )
 
 
+_FALSE_FILE_CLAIM = re.compile(
+    r"[^.!?\n]*\b(?:arquivo|pdf|documento|planilha|word|docs?|csv|excel)"
+    r"\b[^.!?\n]*"
+    r"(?:est[áa]|ficou|foi)\s+(?:pronto|pronta|dispon[íi]vel|gerad[oa])"
+    r"[^.!?\n]*(?:abaixo|acima|download|baixar)[^.!?\n]*[.!?]?",
+    flags=re.IGNORECASE,
+)
+FILE_NOT_GENERATED_NOTE = (
+    "_Não consegui gerar o arquivo desta vez. Peça novamente indicando o "
+    "formato: PDF, Word, Excel ou CSV._"
+)
+
+
+def _remove_false_file_claim(content: str) -> str:
+    """Troca "o arquivo está pronto abaixo" por um aviso quando nenhum
+    arquivo foi gerado nesta resposta."""
+    cleaned, replacements = _FALSE_FILE_CLAIM.subn("", content)
+
+    if not replacements:
+        return content
+
+    cleaned = cleaned.strip()
+    return f"{FILE_NOT_GENERATED_NOTE}\n\n{cleaned}" if cleaned else (
+        FILE_NOT_GENERATED_NOTE
+    )
+
+
 _DISPLAY_NOTE = re.compile(
     r"\s*\[[^\]\n]*(?:aparece|exibid|abaixo)[^\]\n]*\](?!\()",
     flags=re.IGNORECASE,
@@ -557,6 +584,10 @@ async def stream_agent(
 
             if attempt_files:
                 complete_response = _fix_file_position(complete_response)
+            else:
+                complete_response = _remove_false_file_claim(
+                    complete_response
+                )
 
             complete_response = _remove_display_notes(complete_response)
 

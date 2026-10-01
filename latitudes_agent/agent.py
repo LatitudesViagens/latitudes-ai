@@ -177,6 +177,10 @@ root_agent = Agent(
         "breve logo em seguida, na conversa. "
         "O arquivo aparece abaixo da sua resposta: quando mencionar onde ele "
         "está, diga 'abaixo', nunca 'acima'. "
+        "Só diga que um arquivo está pronto se a ferramenta generate_document "
+        "tiver respondido com status ok nesta mensagem. "
+        "Pedidos de 'docs' ou 'Google Docs' devem gerar um arquivo Word "
+        "(docx), que abre no Google Docs. "
 
         "Quando o usuário pedir fotos ou imagens, use a ferramenta "
         "search_images: as fotos aparecem na própria conversa, abaixo da sua "

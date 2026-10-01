@@ -28,8 +28,8 @@ FILE_REQUESTED: ContextVar[bool] = ContextVar(
 )
 
 FILE_REQUEST_PATTERN = re.compile(
-    r"\b(?:pdf|docx?|word|planilhas?|excel|xlsx|csv|arquivos?|documentos?|"
-    r"export\w*|baix\w*|download)\b",
+    r"\b(?:pdf|docs?|docx|word|planilhas?|excel|xlsx|csv|arquivos?|"
+    r"documentos?|export\w*|baix\w*|download)\b",
     flags=re.IGNORECASE,
 )
 
@@ -65,6 +65,9 @@ FORMATS = {
 FORMAT_ALIASES = {
     "word": "docx",
     "doc": "docx",
+    "docs": "docx",
+    "google docs": "docx",
+    "documento": "docx",
     "excel": "xlsx",
     "planilha": "xlsx",
     "xls": "xlsx",
@@ -97,9 +100,10 @@ async def generate_document(
         return {
             "status": "erro",
             "mensagem": (
-                "O usuário não pediu um arquivo nesta mensagem. Não gere "
-                "arquivo: responda com o conteúdo no chat e, se fizer "
-                "sentido, pergunte se ele quer o arquivo."
+                "Nenhum arquivo foi gerado: o usuário não pediu um arquivo "
+                "nesta mensagem. Não diga que existe arquivo pronto. "
+                "Responda com o conteúdo no chat e, se fizer sentido, "
+                "pergunte se ele quer o arquivo."
             ),
         }
 
