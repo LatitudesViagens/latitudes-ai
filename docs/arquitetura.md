@@ -253,11 +253,11 @@ O piloto cumpriu o objetivo de validar o produto e revelou os pontos que precisa
 | Fotos                 | Busca de fotos na internet (Tavily) exibidas em galeria na conversa, respeitando a quantidade pedida. Direitos desconhecidos: não entram em documentos.                                                                                   |
 | Travas                | Arquivos e fotos só são gerados quando a mensagem atual pede; a resposta não pode anunciar arquivo não gerado.                                                                                                                           |
 | Prompt                | Não inventar dados pessoais (usa marcadores como [Nome do cliente]); perguntar só o essencial.                                                                                                                                             |
+| LGPD                  | Roteiros com dados de clientes (nomes, contatos, documentos, reservas, saúde ou restrições ligadas a uma pessoa) não podem ser publicados na memória coletiva: a ficha bloqueia a publicação e, se a verificação falhar, bloqueia também. Aprovado por Isabelle em 01/10/2026. |
 
 **Pendências para a próxima sessão**
 
 - Confirmar com o programador/Dedalus: serviço do Azure (Container Apps, App Service ou VM), branch de deploy e cadastro de `OPENROUTER_API_KEY`.
 - Plano de rollback recomendado: tags de versão (`v1.0`…), branch dedicada à produção e, no Azure, revisões/slots ou imagem anterior guardada.
 - Fotos com licença (Pexels) para documentos, quando a API do Pexels voltar.
-- Proteção opcional na publicação: avisar quando o roteiro tiver dados de clientes antes de ir à memória coletiva (requer aprovação, pois altera a memória coletiva).
 - Renomear `Dockerfile.vercel` e remover restos da Vercel (stub de cookies, `.vercelignore`).

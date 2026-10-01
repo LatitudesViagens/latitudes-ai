@@ -71,6 +71,10 @@ from services.document_export import (
     looks_like_itinerary,
     remove_advice_sections,
 )
+from services.personal_data_check import (
+    PersonalDataResult,
+    find_client_data,
+)
 from services.itinerary_metadata import (
     EMPTY_METADATA,
     extract_itinerary_metadata,
@@ -786,6 +790,46 @@ def _destination_from_title(title: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+CLIENT_DATA_BLOCK_MESSAGE = (
+    "**Este roteiro não pode ser publicado:** ele contém dados de clientes. "
+    "Pela LGPD, dados de clientes não entram na memória coletiva; só o "
+    "roteiro pode ser publicado. Peça à ÁGORA uma versão do roteiro sem "
+    "dados pessoais e publique essa nova versão."
+)
+
+
+def _show_client_data_block(items: list[str]) -> None:
+    found = "".join(
+        f"\n- {escape_dollar_signs(item)}"
+        for item in items[:6]
+    )
+    st.error(
+        CLIENT_DATA_BLOCK_MESSAGE
+        + (f"\n\nEncontrado:{found}" if found else "")
+    )
+
+
+def _get_client_data_check(message: dict) -> PersonalDataResult:
+    """Verificação LGPD do roteiro, feita uma vez por mensagem."""
+    cache_key = f"client_data_check_{message['id']}"
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    with st.spinner("Verificando dados pessoais no roteiro..."):
+        try:
+            result = find_client_data(str(message.get("content", "")))
+        except Exception:
+            traceback.print_exc()
+            result = PersonalDataResult(found=None)
+
+    # Falhas de verificação não ficam em cache: reabrir a ficha tenta de novo.
+    if result.found is not None:
+        st.session_state[cache_key] = result
+
+    return result
+
+
 def _get_publication_suggestions(
     client,
     conversation_id: str,
@@ -857,6 +901,19 @@ def show_publish_itinerary_dialog(
         message=message,
     )
 
+    # LGPD: roteiros com dados de clientes não podem ser publicados.
+    content_check = _get_client_data_check(message)
+    publication_blocked = content_check.found is not False
+
+    if content_check.found is True:
+        _show_client_data_block(content_check.items)
+    elif content_check.found is None:
+        st.warning(
+            "Não foi possível verificar se o roteiro contém dados de "
+            "clientes. Por segurança, a publicação está bloqueada; feche "
+            "e tente novamente em instantes."
+        )
+
     with st.form(
         f"publish_itinerary_form_{message['id']}"
     ):
@@ -908,6 +965,7 @@ def show_publish_itinerary_dialog(
                 "Publicar",
                 type="primary",
                 use_container_width=True,
+                disabled=publication_blocked,
             )
 
         with cancel_column:
@@ -920,7 +978,33 @@ def show_publish_itinerary_dialog(
         st.session_state.message_to_publish = None
         st.rerun()
 
-    if not publish_submitted:
+    if not publish_submitted or publication_blocked:
+        return
+
+    # A consultora pode ter digitado dados de clientes nos campos da ficha.
+    form_text = "\n".join(
+        [
+            title,
+            destination,
+            traveler_profile,
+            interests_text,
+            budget_range,
+            keywords_text,
+        ]
+    )
+
+    with st.spinner("Verificando dados pessoais..."):
+        form_check = find_client_data(form_text)
+
+    if form_check.found is True:
+        _show_client_data_block(form_check.items)
+        return
+
+    if form_check.found is None:
+        st.warning(
+            "Não foi possível verificar os campos da ficha. Por segurança, "
+            "a publicação não foi feita; tente novamente em instantes."
+        )
         return
 
     duration_days = None
