@@ -84,9 +84,8 @@ A arquitetura-alvo mantém a aplicação monolítica durante a próxima fase par
 |------------------------|-------------------------|-------------------------------------------------------------------|
 | Linguagem              | Python 3.13             | Implementado no contêiner atual                                   |
 | Interface              | Streamlit 1.62          | Implementado                                                      |
-| Orquestração de agente | Google ADK 2.7.1        | Implementado; será reavaliado com a adoção do OpenRouter          |
-| LLM atual              | Gemini via Google GenAI | Implementado no piloto                                            |
-| LLM futuro             | OpenRouter              | Decidido para a próxima fase; integração pendente                 |
+| Orquestração de agente | Google ADK 2.7.1        | Implementado; modelos acessados via LiteLLM (`LiteLlm`)            |
+| LLM                    | OpenRouter              | Implementado em 01/10/2026 (ver seção 12)                         |
 | Pesquisa web           | Tavily                  | Implementado, com instabilidades observadas na Vercel             |
 | Persistência           | Supabase PostgreSQL     | Implementado; migração para plano pago prevista                   |
 | Autenticação           | Supabase Auth           | Implementado com login e senha dentro da ÁGORA                    |
@@ -236,3 +235,29 @@ A solicitação deve informar que se trata de uma aplicação web Python empacot
 # 11. Conclusão
 
 O piloto cumpriu o objetivo de validar o produto e revelou os pontos que precisam de uma infraestrutura persistente. A decisão de manter Supabase, adotar OpenRouter e executar a ÁGORA em uma VM Azure reduz mudanças simultâneas e preserva o que já funciona. A migração deve ser feita por etapas, com homologação, métricas, segurança e rollback. A versão paga estará pronta para o piloto ampliado quando os critérios de aceite de sessão, mensagens, anexos, pesquisa, privacidade e operação forem atendidos.
+
+# 12. Registro de evolução
+
+## 28/09 a 01/10/2026 — ambiente local, branch `migracao-ferramentas-pagas`
+
+| **Tema**              | **O que mudou**                                                                                                                                                                                                                           |
+|-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Repositórios          | Código em `LatitudesViagens/latitudes-ai` e em `isacontieri/latitudes-ai` (ambos privados); um `git push` atualiza os dois. Tag `piloto-vercel-v1` marca a versão do piloto na Vercel.                                                    |
+| Vercel                | Abandonada como plataforma; o deploy será no Azure.                                                                                                                                                                                       |
+| Modelos               | OpenRouter via LiteLLM. Principal `google/gemini-3.1-flash-lite`; fallback `openai/gpt-6-luna` (outra empresa, raciocínio baixo). Escolha por custo real × tempo: num roteiro completo, custo equivalente (~US$ 0,001) e Gemini 5–10× mais rápido. Configuráveis por `AGORA_MODEL_PRINCIPAL` e `AGORA_MODEL_FALLBACK`. |
+| Diagnóstico Gemini    | A instabilidade de 29–30/09 (503 contínuo) vinha da chave do Gemini no plano gratuito, não do código. Resolvido com o OpenRouter.                                                                                                         |
+| Kaspersky             | Intercepta HTTPS de `openrouter.ai` nas máquinas da Latitudes; o app usa `truststore` para confiar nos certificados do sistema. Não afeta o servidor no Azure.                                                                             |
+| Resiliência           | Nova tentativa após 429/5xx, mais tempo com anexos, descarte do raciocínio interno dos modelos.                                                                                                                                           |
+| Conversa              | Títulos gerados por IA; correção de valores em dólar exibidos como fórmula; ficha de publicação pré-preenchida pela IA; botões Exportar/Publicar só em respostas adequadas (Publicar só em roteiros por dias).                           |
+| Arquivos              | A ÁGORA gera PDF, Word, Excel e CSV com identidade visual (logo no topo e no rodapé), salvos na pasta privada do usuário no Storage, sem migração nem mudança de políticas. Documentos levam só o roteiro, sem tom de conversa, recomendações, observações ou fontes. |
+| Fotos                 | Busca de fotos na internet (Tavily) exibidas em galeria na conversa, respeitando a quantidade pedida. Direitos desconhecidos: não entram em documentos.                                                                                   |
+| Travas                | Arquivos e fotos só são gerados quando a mensagem atual pede; a resposta não pode anunciar arquivo não gerado.                                                                                                                           |
+| Prompt                | Não inventar dados pessoais (usa marcadores como [Nome do cliente]); perguntar só o essencial.                                                                                                                                             |
+
+**Pendências para a próxima sessão**
+
+- Confirmar com o programador/Dedalus: serviço do Azure (Container Apps, App Service ou VM), branch de deploy e cadastro de `OPENROUTER_API_KEY`.
+- Plano de rollback recomendado: tags de versão (`v1.0`…), branch dedicada à produção e, no Azure, revisões/slots ou imagem anterior guardada.
+- Fotos com licença (Pexels) para documentos, quando a API do Pexels voltar.
+- Proteção opcional na publicação: avisar quando o roteiro tiver dados de clientes antes de ir à memória coletiva (requer aprovação, pois altera a memória coletiva).
+- Renomear `Dockerfile.vercel` e remover restos da Vercel (stub de cookies, `.vercelignore`).
