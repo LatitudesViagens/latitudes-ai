@@ -4,9 +4,14 @@ import re
 
 from supabase import Client
 
-from database.attachments import hydrate_chat_attachments
+from database.attachments import (
+    hydrate_chat_attachments,
+    upload_generated_files,
+)
+from database.conversations import rename_conversation
 from database.messages import add_message, list_messages
 from services.agent_runner import ask_agent, stream_agent
+from services.title_service import generate_conversation_title
 
 
 INTERRUPTED_RESPONSE = "Resposta interrompida pelo usuário."
@@ -102,6 +107,102 @@ def _prepare_history_for_agent(
     return prepared_history
 
 
+GENERATED_FILE_FAILURE_NOTE = (
+    "\n\n_Não foi possível salvar o arquivo gerado. "
+    "Peça novamente em instantes._"
+)
+
+
+def _save_generated_files(
+    client: Client,
+    user_id: str,
+    conversation_id: str,
+    files: list[dict],
+) -> list[dict] | None:
+    """Salva os arquivos da resposta; None indica falha no salvamento."""
+    if not files:
+        return []
+
+    try:
+        return upload_generated_files(
+            client=client,
+            user_id=str(user_id),
+            conversation_id=str(conversation_id),
+            files=files,
+        )
+    except Exception as error:
+        print(
+            f"[DOCUMENT] upload_error={type(error).__name__}",
+            flush=True,
+        )
+        return None
+
+
+def is_model_answer(message: dict) -> bool:
+    if message.get("role") != "assistant":
+        return False
+
+    if message.get("content") in {FAILED_RESPONSE, INTERRUPTED_RESPONSE}:
+        return False
+
+    # A oferta de roteiro da memória coletiva não é uma resposta do modelo.
+    return not any(
+        isinstance(source, dict)
+        and source.get("type") == "shared_itinerary_candidate"
+        for source in message.get("sources") or []
+    )
+
+
+def update_title_after_first_answer(
+    client: Client,
+    conversation_id: str,
+) -> str | None:
+    """Troca o título provisório por um resumo gerado pela IA.
+
+    Só age na primeira resposta válida do modelo, para não sobrescrever
+    títulos renomeados pelo usuário depois. Mantém o título provisório se
+    a geração falhar.
+    """
+    messages = list_messages(
+        client=client,
+        conversation_id=conversation_id,
+    )
+
+    answers = [
+        message
+        for message in messages
+        if is_model_answer(message)
+    ]
+
+    if len(answers) != 1:
+        return None
+
+    first_question = next(
+        (
+            message.get("content", "")
+            for message in messages
+            if message.get("role") == "user"
+        ),
+        "",
+    )
+
+    title = generate_conversation_title(
+        question=first_question,
+        answer=answers[0].get("content", ""),
+    )
+
+    if not title:
+        return None
+
+    rename_conversation(
+        client=client,
+        conversation_id=conversation_id,
+        title=title,
+    )
+
+    return title
+
+
 def close_pending_response(
     client: Client,
     conversation_id: str,
@@ -153,6 +254,7 @@ async def process_message(
     )
 
     sources = []
+    generated_files = []
 
     assistant_content = await ask_agent(
         user_id=str(user_id),
@@ -161,7 +263,19 @@ async def process_message(
         history=hydrated_history,
         source_collector=sources,
         attachments=current_attachments,
+        file_collector=generated_files,
     )
+
+    saved_files = _save_generated_files(
+        client=client,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        files=generated_files,
+    )
+
+    if saved_files is None:
+        assistant_content += GENERATED_FILE_FAILURE_NOTE
+        saved_files = []
 
     assistant_message = add_message(
         client=client,
@@ -169,6 +283,7 @@ async def process_message(
         role="assistant",
         content=assistant_content,
         sources=sources,
+        attachments=saved_files,
     )
 
     return {
@@ -206,6 +321,7 @@ async def process_message_stream(
 
     response_chunks = []
     sources = []
+    generated_files = []
     stopped = False
 
     try:
@@ -216,6 +332,7 @@ async def process_message_stream(
             history=hydrated_history,
             source_collector=sources,
             attachments=current_attachments,
+            file_collector=generated_files,
         ):
             response_chunks.append(chunk)
             yield chunk
@@ -230,12 +347,24 @@ async def process_message_stream(
             assistant_content += "\n\n_Resposta interrompida pelo usuário._"
 
         if assistant_content:
+            saved_files = _save_generated_files(
+                client=client,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                files=generated_files,
+            )
+
+            if saved_files is None:
+                assistant_content += GENERATED_FILE_FAILURE_NOTE
+                saved_files = []
+
             add_message(
                 client=client,
                 conversation_id=conversation_id,
                 role="assistant",
                 content=assistant_content,
                 sources=sources,
+                attachments=saved_files,
             )
         elif stopped:
             close_pending_response(

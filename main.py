@@ -1,6 +1,11 @@
 import asyncio
 from getpass import getpass
 
+import truststore
+
+# Mesmo motivo de streamlit_app.py: confiar nos certificados do sistema.
+truststore.inject_into_ssl()
+
 from database.auth import sign_in
 from database.conversations import (
     create_conversation,

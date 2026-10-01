@@ -1,6 +1,7 @@
 ﻿import asyncio
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+import re
 import time
 
 from dotenv import load_dotenv
@@ -19,13 +20,26 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 
 from database import attachments
+from agent_tools.document_generator import (
+    FILE_REQUESTED,
+    GENERATED_FILES,
+    user_requested_file,
+)
+from agent_tools.image_search import (
+    IMAGE_BUDGET,
+    IMAGES_REQUESTED,
+    requested_image_count,
+    user_requested_images,
+)
 from latitudes_agent.agent import fallback_agent, root_agent
 
 
 APP_NAME = "latitudes_ai"
+GENERATED_FILE_MESSAGE = "Pronto! O arquivo está disponível logo abaixo."
 DISPLAY_CHUNK_SIZE = 48
 PRIMARY_TIMEOUT_SECONDS = 15
-FALLBACK_TIMEOUT_SECONDS = 25
+# O fallback (GPT-6 Luna) raciocina antes de responder: ~18s num roteiro.
+FALLBACK_TIMEOUT_SECONDS = 35
 ATTACHMENT_PRIMARY_TIMEOUT_SECONDS = 20
 ATTACHMENT_FALLBACK_TIMEOUT_SECONDS = 40
 FALLBACK_RETRY_DELAY_SECONDS = 2
@@ -132,6 +146,37 @@ async def _restore_history(
         )
 
 
+def _collect_images(
+    response_data: Mapping,
+    source_collector: list[dict],
+    existing_urls: set,
+) -> None:
+    """Guarda as fotos encontradas; a interface as exibe como galeria."""
+    images = response_data.get("images", [])
+
+    if not isinstance(images, list):
+        return
+
+    for image in images:
+        if not isinstance(image, Mapping):
+            continue
+
+        url = str(image.get("url", "")).strip()
+
+        if not url or url in existing_urls:
+            continue
+
+        source_collector.append(
+            {
+                "type": "image",
+                "url": url,
+                "description": str(image.get("description", "")).strip(),
+                "query": str(response_data.get("query", "")).strip(),
+            }
+        )
+        existing_urls.add(url)
+
+
 def _collect_web_sources(
     event: Event,
     source_collector: list[dict],
@@ -143,7 +188,7 @@ def _collect_web_sources(
     }
 
     for function_response in event.get_function_responses():
-        if function_response.name != "search_web":
+        if function_response.name not in {"search_web", "search_images"}:
             continue
 
         response_data = function_response.response
@@ -155,6 +200,14 @@ def _collect_web_sources(
 
         if isinstance(nested_result, Mapping):
             response_data = nested_result
+
+        if function_response.name == "search_images":
+            _collect_images(
+                response_data=response_data,
+                source_collector=source_collector,
+                existing_urls=existing_urls,
+            )
+            continue
 
         results = response_data.get("results", [])
 
@@ -187,9 +240,15 @@ def _collect_web_sources(
 
 
 def _is_retryable_model_error(error: BaseException) -> bool:
-    status_code = getattr(error, "status_code", None)
+    status_code = getattr(
+        error,
+        "status_code",
+        getattr(error, "code", None),
+    )
 
-    if status_code in {429, 503}:
+    # Limite de uso, erro interno e indisponibilidade são falhas temporárias
+    # do provedor (as exceções do LiteLLM trazem o código em status_code).
+    if status_code in {408, 429, 500, 502, 503, 504}:
         return True
 
     error_text = str(error).lower()
@@ -197,6 +256,10 @@ def _is_retryable_model_error(error: BaseException) -> bool:
     return (
         "503" in error_text
         or "429" in error_text
+        or "500 internal" in error_text
+        or "rate limit" in error_text
+        or "ratelimit" in error_text
+        or "overloaded" in error_text
         or "high demand" in error_text
         or "service unavailable" in error_text
         or "resource_exhausted" in error_text
@@ -215,6 +278,36 @@ def _has_multimodal_content(
         message.get("attachments")
         for message in history or []
     )
+
+
+_FILE_MENTION = re.compile(
+    r"arquivo|download|baixar|pdf|planilha|documento|word|excel|csv",
+    flags=re.IGNORECASE,
+)
+
+
+def _fix_file_position(content: str) -> str:
+    """O cartão do arquivo fica abaixo da resposta; corrige "acima"."""
+    sentences = re.split(r"(?<=[.!?])(\s+)", content)
+
+    return "".join(
+        re.sub(r"\bacima\b", "abaixo", sentence)
+        if _FILE_MENTION.search(sentence)
+        else sentence
+        for sentence in sentences
+    )
+
+
+_DISPLAY_NOTE = re.compile(
+    r"\s*\[[^\]\n]*(?:aparece|exibid|abaixo)[^\]\n]*\](?!\()",
+    flags=re.IGNORECASE,
+)
+
+
+def _remove_display_notes(content: str) -> str:
+    """Remove avisos internos copiados das ferramentas, como
+    "[As fotos aparecem abaixo]". Links em Markdown ficam intactos."""
+    return _DISPLAY_NOTE.sub("", content).strip()
 
 
 def _split_for_display(content: str) -> list[str]:
@@ -317,10 +410,12 @@ async def _stream_agent_attempt(
         if not event.content:
             continue
 
+        # Modelos com raciocínio devolvem o "pensamento" em partes marcadas
+        # com thought=True; ele é interno e não pode aparecer na resposta.
         event_text = "".join(
             part.text
             for part in event.content.parts
-            if part.text
+            if part.text and not part.thought
         )
 
         if not event_text:
@@ -348,6 +443,11 @@ async def _stream_agent_attempt(
                     yield remaining_text
 
     if not assembled_response.strip():
+        # O modelo pode gerar o arquivo e encerrar sem escrever texto.
+        if GENERATED_FILES.get():
+            yield GENERATED_FILE_MESSAGE
+            return
+
         raise RuntimeError(
             "O agente não retornou uma resposta final."
         )
@@ -360,11 +460,18 @@ async def stream_agent(
     history: list[dict] | None = None,
     source_collector: list[dict] | None = None,
     attachments: list[dict] | None = None,
+    file_collector: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     clean_question = question.strip()
 
     if not clean_question:
         raise ValueError("A pergunta não pode estar vazia.")
+
+    # As ferramentas generate_document e search_images só agem quando esta
+    # mensagem pede, respectivamente, um arquivo ou fotos.
+    FILE_REQUESTED.set(user_requested_file(clean_question))
+    IMAGES_REQUESTED.set(user_requested_images(clean_question))
+    image_limit = requested_image_count(clean_question)
 
     # Chamadas com anexos demoram mais no provedor, principalmente sob carga.
     if _has_multimodal_content(history, attachments):
@@ -412,6 +519,13 @@ async def stream_agent(
             else 0
         )
 
+        # Arquivos gerados pela ferramenta generate_document nesta tentativa;
+        # só são aproveitados se a tentativa terminar com sucesso.
+        attempt_files: list[dict] = []
+        GENERATED_FILES.set(attempt_files)
+        # Total de fotos permitido nesta tentativa, somando todas as buscas.
+        IMAGE_BUDGET.set([image_limit])
+
         try:
             async with asyncio.timeout(timeout_seconds):
                 async for chunk in _stream_agent_attempt(
@@ -439,6 +553,16 @@ async def stream_agent(
                 flush=True,
             )
 
+            GENERATED_FILES.set(None)
+
+            if attempt_files:
+                complete_response = _fix_file_position(complete_response)
+
+            complete_response = _remove_display_notes(complete_response)
+
+            if file_collector is not None:
+                file_collector.extend(attempt_files)
+
             # A resposta só é exibida depois que a tentativa termina.
             # Isso evita respostas parciais ou duplicadas quando o
             # modelo principal falha e o fallback assume.
@@ -451,6 +575,8 @@ async def stream_agent(
 
         except TimeoutError as error:
             last_error = error
+            # Arquivos de uma tentativa incompleta são descartados.
+            GENERATED_FILES.set(None)
 
             print(
                 f"[PERF] agent_attempt_timeout "
@@ -477,6 +603,7 @@ async def stream_agent(
 
         except Exception as error:
             last_error = error
+            GENERATED_FILES.set(None)
 
             print(
                 f"[PERF] agent_attempt_error "
@@ -512,6 +639,7 @@ async def ask_agent(
     history: list[dict] | None = None,
     source_collector: list[dict] | None = None,
     attachments: list[dict] | None = None,
+    file_collector: list[dict] | None = None,
 ) -> str:
     response_chunks = []
 
@@ -522,6 +650,7 @@ async def ask_agent(
         history=history,
         source_collector=source_collector,
         attachments=attachments,
+        file_collector=file_collector,
     ):
         response_chunks.append(chunk)
 

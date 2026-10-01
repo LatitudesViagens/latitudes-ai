@@ -461,6 +461,61 @@ def upload_chat_attachments(
     return uploaded_metadata
 
 
+def upload_generated_files(
+    client: Client,
+    user_id: str,
+    conversation_id: str,
+    files: list[dict],
+) -> list[dict]:
+    """Salva arquivos gerados pela ÁGORA na pasta privada do usuário.
+
+    Usa o mesmo caminho dos anexos ({user_id}/{conversation_id}/...), coberto
+    pelas políticas de Storage existentes.
+    """
+    uploaded_metadata = []
+    uploaded_paths = []
+
+    try:
+        for generated_file in files:
+            safe_name = _safe_filename(str(generated_file["name"]))
+            data = generated_file["data"]
+            mime_type = str(generated_file["mime_type"])
+            storage_path = (
+                f"{user_id}/{conversation_id}/"
+                f"{uuid4()}-{safe_name}"
+            )
+
+            client.storage.from_(BUCKET_NAME).upload(
+                path=storage_path,
+                file=data,
+                file_options={
+                    "content-type": mime_type,
+                    "upsert": "false",
+                },
+            )
+
+            uploaded_paths.append(storage_path)
+            uploaded_metadata.append(
+                {
+                    "name": safe_name,
+                    "path": storage_path,
+                    "mime_type": mime_type,
+                    "size": len(data),
+                    "generated": True,
+                }
+            )
+    except Exception:
+        if uploaded_paths:
+            try:
+                client.storage.from_(BUCKET_NAME).remove(uploaded_paths)
+            except Exception:
+                pass
+
+        raise
+
+    return uploaded_metadata
+
+
 def download_chat_attachment(
     client: Client,
     attachment: dict,

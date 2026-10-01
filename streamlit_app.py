@@ -6,7 +6,17 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 import traceback
+from urllib.parse import urlparse
+
+import truststore
+
+# Usa os certificados confiáveis do sistema operacional. Antivírus e
+# firewalls corporativos (como o Kaspersky) inspecionam HTTPS com um
+# certificado próprio que só o sistema conhece; sem isso, chamadas ao
+# OpenRouter falham por certificado inválido.
+truststore.inject_into_ssl()
 
 import streamlit as st
 from PIL import Image
@@ -45,7 +55,23 @@ from services.chat_service import (
     FAILED_RESPONSE,
     INTERRUPTED_RESPONSE,
     close_pending_response,
+    is_model_answer,
     process_message_stream,
+    update_title_after_first_answer,
+)
+from services.document_cleanup import clean_for_document
+from services.document_export import (
+    export_csv,
+    export_docx,
+    export_file_name,
+    export_pdf,
+    export_xlsx,
+    has_table,
+    remove_advice_sections,
+)
+from services.itinerary_metadata import (
+    EMPTY_METADATA,
+    extract_itinerary_metadata,
 )
 
 
@@ -54,6 +80,7 @@ ASSETS_DIR = PROJECT_ROOT / "assets"
 CSS_FILE = ASSETS_DIR / "styles.css"
 LOGO_FILE = ASSETS_DIR / "logo-latitudes.png"
 LOGIN_BACKGROUND_FILE = ASSETS_DIR / "login-background.jpg"
+TITLE_WAIT_SECONDS = 4
 
 CHAT_FILE_TYPES = [
     "csv",
@@ -154,6 +181,12 @@ else:
 
 AUTH_COOKIE_KEY = "auth_session"
 SELECTED_CONVERSATION_COOKIE_KEY = "selected_conversation_id"
+
+
+def escape_dollar_signs(text: str) -> str:
+    # O Markdown do Streamlit interpreta o trecho entre dois "$" como fórmula
+    # LaTeX; em "US$ 100 a US$ 200" isso muda a cor e some com espaços.
+    return text.replace("$", r"\$")
 
 
 def load_css() -> None:
@@ -751,6 +784,52 @@ def _destination_from_title(title: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _get_publication_suggestions(
+    client,
+    conversation_id: str,
+    message: dict,
+) -> dict:
+    """Sugestões da IA para a ficha, calculadas uma vez por mensagem."""
+    cache_key = f"publication_suggestions_{message['id']}"
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    question = ""
+
+    try:
+        conversation_messages = list_messages(
+            client=client,
+            conversation_id=conversation_id,
+        )
+        message_ids = [item.get("id") for item in conversation_messages]
+        message_index = message_ids.index(message["id"])
+
+        question = next(
+            (
+                str(item.get("content", ""))
+                for item in reversed(conversation_messages[:message_index])
+                if item.get("role") == "user"
+            ),
+            "",
+        )
+    except Exception:
+        traceback.print_exc()
+
+    with st.spinner("Preenchendo a ficha com as informações do roteiro..."):
+        try:
+            suggestions = extract_itinerary_metadata(
+                content=str(message.get("content", "")),
+                question=question,
+            )
+        except Exception:
+            traceback.print_exc()
+            suggestions = dict(EMPTY_METADATA)
+
+    st.session_state[cache_key] = suggestions
+    return suggestions
+
+
 @st.dialog(
     "Publicar versão atual",
     icon=":material/group:",
@@ -770,39 +849,53 @@ def show_publish_itinerary_dialog(
     default_destination = _destination_from_title(
         str(conversation["title"])
     )
+    suggested = _get_publication_suggestions(
+        client=client,
+        conversation_id=conversation["id"],
+        message=message,
+    )
 
     with st.form(
         f"publish_itinerary_form_{message['id']}"
     ):
         title = st.text_input(
             "Título do roteiro",
-            value=str(conversation["title"]),
+            value=suggested["titulo"] or str(conversation["title"]),
             max_chars=120,
         )
         destination = st.text_input(
             "Destino",
-            value=default_destination,
+            value=suggested["destino"] or default_destination,
             max_chars=100,
             placeholder="Ex.: Mumbai",
         )
         duration_text = st.text_input(
             "Duração em dias (opcional)",
+            value=(
+                str(suggested["duracao_dias"])
+                if suggested["duracao_dias"]
+                else ""
+            ),
             placeholder="Ex.: 7",
         )
         traveler_profile = st.text_input(
             "Perfil dos viajantes (opcional)",
+            value=suggested["perfil_viajantes"],
             placeholder="Ex.: Casal",
         )
         interests_text = st.text_input(
             "Interesses (opcional)",
+            value=", ".join(suggested["interesses"]),
             placeholder="Ex.: Cultura, gastronomia",
         )
         budget_range = st.text_input(
             "Faixa de orçamento (opcional)",
+            value=suggested["faixa_orcamento"],
             placeholder="Ex.: Alto padrão",
         )
         keywords_text = st.text_input(
             "Outras palavras-chave (opcional)",
+            value=", ".join(suggested["palavras_chave"]),
             placeholder="Ex.: Índia, roteiro cultural",
         )
 
@@ -1041,7 +1134,7 @@ def create_title_from_message(
     else:
         summarized_title = "Nova conversa"
 
-    maximum_length = 48
+    maximum_length = 40
 
     if len(summarized_title) <= maximum_length:
         return summarized_title
@@ -1134,6 +1227,99 @@ def display_message_attachments(
             )
 
 
+GENERATED_FILE_LABELS = {
+    "application/pdf": ("PDF", ":material/picture_as_pdf:"),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ): ("Documento Word", ":material/description:"),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet"
+    ): ("Planilha Excel", ":material/table_view:"),
+    "text/csv": ("Arquivo CSV", ":material/csv:"),
+}
+
+
+def display_generated_files(
+    client,
+    attachments: list[dict] | None,
+) -> None:
+    for attachment in attachments or []:
+        name = str(attachment.get("name", "arquivo"))
+        mime_type = str(attachment.get("mime_type", ""))
+        label, icon = GENERATED_FILE_LABELS.get(
+            mime_type,
+            ("Arquivo", ":material/draft:"),
+        )
+        size_kb = max(1, round(int(attachment.get("size") or 0) / 1024))
+
+        # O arquivo só é baixado do Storage quando a pessoa clica.
+        def load_file(attachment=attachment) -> bytes:
+            return download_chat_attachment(
+                client=client,
+                attachment=attachment,
+            )
+
+        with st.container(border=True):
+            info_column, button_column = st.columns(
+                [3, 1],
+                vertical_alignment="center",
+            )
+
+            with info_column:
+                st.markdown(f"**{escape_dollar_signs(name)}**")
+                st.caption(f"{label} · {size_kb} KB · Identidade Latitudes")
+
+            with button_column:
+                st.download_button(
+                    "Baixar",
+                    data=load_file,
+                    file_name=name,
+                    mime=mime_type or "application/octet-stream",
+                    icon=icon,
+                    key=f"generated_{attachment.get('path', name)}",
+                    on_click="ignore",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+
+def display_image_gallery(
+    sources: list[dict] | None,
+) -> None:
+    images = [
+        source
+        for source in sources or []
+        if isinstance(source, dict)
+        and source.get("type") == "image"
+        and source.get("url")
+    ]
+
+    if not images:
+        return
+
+    columns = st.columns(3)
+
+    for index, image in enumerate(images):
+        url = str(image["url"])
+        host = urlparse(url).netloc.removeprefix("www.")
+
+        with columns[index % 3]:
+            # A imagem vem direto do site de origem; clicar abre o original.
+            st.image(
+                url,
+                width="stretch",
+                link=url,
+            )
+            st.caption(f"Fonte: {host}")
+
+    st.caption(
+        "Fotos encontradas na internet, para referência interna. "
+        "Verifique os direitos de uso antes de enviar a clientes."
+    )
+
+
 def display_user_message(
     content: str,
     client=None,
@@ -1143,7 +1329,7 @@ def display_user_message(
         "user",
         avatar="👤",
     ):
-        st.markdown(content)
+        st.markdown(escape_dollar_signs(content))
 
         if client is not None:
             display_message_attachments(
@@ -1313,6 +1499,89 @@ def _build_shared_itinerary_context(itinerary: dict) -> str:
     )
 
 
+EXPORT_MIME_TYPES = {
+    "pdf": "application/pdf",
+    "docx": (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ),
+    "xlsx": (
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet"
+    ),
+    "csv": "text/csv",
+}
+
+
+def show_export_menu(
+    message: dict,
+    document_title: str,
+) -> None:
+    content = str(message.get("content", ""))
+
+    # Cada arquivo só é gerado quando a pessoa clica (callable em data).
+    # PDF e Word levam só o roteiro (sem recomendações/observações/fontes,
+    # que ficam na conversa) e sem tom de conversa, prontos para clientes.
+    def document_content() -> str:
+        return clean_for_document(remove_advice_sections(content))
+
+    def build_pdf() -> bytes:
+        return export_pdf(document_content(), document_title)
+
+    def build_docx() -> bytes:
+        return export_docx(document_content(), document_title)
+
+    def build_xlsx() -> bytes:
+        return export_xlsx(content, document_title)
+
+    def build_csv() -> bytes:
+        return export_csv(content)
+
+    formats = [
+        ("PDF", "pdf", build_pdf, ":material/picture_as_pdf:"),
+        ("Word", "docx", build_docx, ":material/description:"),
+    ]
+
+    if has_table(content):
+        formats += [
+            ("Excel", "xlsx", build_xlsx, ":material/table_view:"),
+            ("CSV", "csv", build_csv, ":material/csv:"),
+        ]
+
+    with st.popover(
+        "Exportar",
+        icon=":material/download:",
+        type="tertiary",
+    ):
+        st.caption("Documentos com a identidade visual da Latitudes.")
+
+        for label, extension, build, icon in formats:
+            st.download_button(
+                label,
+                data=build,
+                file_name=export_file_name(document_title, extension),
+                mime=EXPORT_MIME_TYPES[extension],
+                icon=icon,
+                key=f"export_{extension}_{message['id']}",
+                on_click="ignore",
+                use_container_width=True,
+            )
+
+
+def _update_title_in_background(
+    client,
+    conversation_id: str,
+) -> None:
+    try:
+        update_title_after_first_answer(
+            client=client,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        # O título provisório continua válido; a resposta já foi salva.
+        traceback.print_exc()
+
+
 def stream_assistant_response(
     client,
     user_id: str,
@@ -1400,7 +1669,7 @@ def stream_assistant_response(
                         status_placeholder.empty()
                         first_chunk = False
 
-                    yield payload
+                    yield escape_dollar_signs(payload)
             finally:
                 if not producer.done():
                     producer.cancel()
@@ -1427,13 +1696,25 @@ def stream_assistant_response(
 
             error_text = str(error).lower()
 
+            status_code = getattr(error, "status_code", None)
+
             if isinstance(error, TimeoutError):
                 error_message = (
                     "A IA demorou mais que o esperado para responder. "
                     "A conversa foi liberada; tente novamente em instantes."
                 )
             elif (
-                "429" in error_text
+                status_code == 402
+                or "insufficient credits" in error_text
+            ):
+                error_message = (
+                    "Os créditos do serviço de IA acabaram. "
+                    "Avise a equipe responsável pela ÁGORA."
+                )
+            elif (
+                status_code == 429
+                or "429" in error_text
+                or "rate limit" in error_text
                 or "resource_exhausted" in error_text
                 or "quota exceeded" in error_text
             ):
@@ -1443,8 +1724,10 @@ def stream_assistant_response(
                     "a cota estiver disponível."
                 )
             elif (
-                "503" in error_text
+                status_code in {500, 502, 503, 504}
+                or "503" in error_text
                 or "high demand" in error_text
+                or "overloaded" in error_text
                 or "service unavailable" in error_text
             ):
                 error_message = (
@@ -1461,6 +1744,19 @@ def stream_assistant_response(
                 error_message
             )
             return False
+
+    # O título é gerado em segundo plano. Esperamos alguns segundos para ele
+    # já aparecer na tela; se a IA demorar, ele surge na próxima atualização.
+    title_thread = threading.Thread(
+        target=_update_title_in_background,
+        kwargs={
+            "client": client,
+            "conversation_id": conversation_id,
+        },
+        daemon=True,
+    )
+    title_thread.start()
+    title_thread.join(timeout=TITLE_WAIT_SECONDS)
 
     return True
 
@@ -2102,7 +2398,22 @@ def show_authenticated_area() -> None:
                 "assistant",
                 avatar="/app/static/agora-avatar-v2.png",
             ):
-                st.markdown(content)
+                st.markdown(escape_dollar_signs(content))
+
+                display_image_gallery(message.get("sources"))
+
+                generated_files = message.get("attachments") or []
+
+                if generated_files:
+                    display_generated_files(
+                        client=client,
+                        attachments=generated_files,
+                    )
+                elif is_model_answer(message):
+                    show_export_menu(
+                        message=message,
+                        document_title=str(selected_conversation["title"]),
+                    )
 
                 can_publish = (
                     selected_conversation.get("visibility") == "public"
