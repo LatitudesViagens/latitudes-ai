@@ -290,6 +290,32 @@ def _split_title(blocks: list[Block], title: str) -> tuple[str, list[Block]]:
     return title, blocks
 
 
+_DAY_PATTERN = re.compile(r"\bdias?\s+(\d{1,2})\b", flags=re.IGNORECASE)
+
+
+def looks_like_itinerary(content: str) -> bool:
+    """Roteiro = conteúdo organizado por dias (Dia 1, Dia 2...)."""
+    days = {int(day) for day in _DAY_PATTERN.findall(content or "")}
+    return len(days) >= 2
+
+
+def looks_like_document(content: str) -> bool:
+    """Conteúdo estruturado o bastante para virar PDF/Word."""
+    if looks_like_itinerary(content):
+        return True
+
+    blocks = parse_markdown(content)
+
+    if any(block.kind == "table" for block in blocks):
+        return True
+
+    headings = sum(block.kind == "heading" for block in blocks)
+    list_items = sum(block.kind == "list_item" for block in blocks)
+    words = len((content or "").split())
+
+    return words >= 120 and (headings >= 2 or list_items >= 4)
+
+
 def has_table(content: str) -> bool:
     return any(block.kind == "table" for block in parse_markdown(content))
 

@@ -67,6 +67,8 @@ from services.document_export import (
     export_pdf,
     export_xlsx,
     has_table,
+    looks_like_document,
+    looks_like_itinerary,
     remove_advice_sections,
 )
 from services.itinerary_metadata import (
@@ -2409,18 +2411,22 @@ def show_authenticated_area() -> None:
                         client=client,
                         attachments=generated_files,
                     )
-                elif is_model_answer(message):
+                elif is_model_answer(message) and looks_like_document(content):
+                    # Respostas curtas/conversa não viram documento.
                     show_export_menu(
                         message=message,
                         document_title=str(selected_conversation["title"]),
                     )
 
+                # Só roteiros (organizados por dias) podem ir para a memória
+                # coletiva; a publicação continua manual, pela ficha.
                 can_publish = (
                     selected_conversation.get("visibility") == "public"
                     and latest_assistant_message is not None
                     and message.get("id")
                     == latest_assistant_message.get("id")
                     and _get_shared_offer(message) is None
+                    and looks_like_itinerary(content)
                 )
 
                 if can_publish and st.button(
