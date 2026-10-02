@@ -299,23 +299,6 @@ def looks_like_itinerary(content: str) -> bool:
     return len(days) >= 2
 
 
-def looks_like_document(content: str) -> bool:
-    """Conteúdo estruturado o bastante para virar PDF/Word."""
-    if looks_like_itinerary(content):
-        return True
-
-    blocks = parse_markdown(content)
-
-    if any(block.kind == "table" for block in blocks):
-        return True
-
-    headings = sum(block.kind == "heading" for block in blocks)
-    list_items = sum(block.kind == "list_item" for block in blocks)
-    words = len((content or "").split())
-
-    return words >= 120 and (headings >= 2 or list_items >= 4)
-
-
 def has_table(content: str) -> bool:
     return any(block.kind == "table" for block in parse_markdown(content))
 

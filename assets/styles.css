@@ -288,6 +288,25 @@ div[data-testid="stForm"] {
     color: var(--latitudes-orange);
 }
 
+/* Botão Parar ao lado do campo de mensagem (só aparece com a IA pensando) */
+.st-key-stop_turn_button button {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--latitudes-orange);
+    color: var(--latitudes-white);
+    box-shadow: 0 6px 18px rgba(246, 134, 47, 0.35);
+}
+
+.st-key-stop_turn_button button:hover,
+.st-key-stop_turn_button button:focus {
+    background: var(--latitudes-olive-dark);
+    color: var(--latitudes-white);
+}
+
 /* Mensagens e avisos */
 
 [data-testid="stAlert"] {

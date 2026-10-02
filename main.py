@@ -12,7 +12,12 @@ from database.conversations import (
     list_conversations,
 )
 from database.messages import list_messages
-from services.chat_service import process_message
+from services.chat_service import (
+    TURN_FAILED_MESSAGE,
+    TurnFailedError,
+    process_message,
+    visible_messages,
+)
 
 
 def choose_conversation(
@@ -62,10 +67,16 @@ def show_history(
     client,
     conversation_id: str,
 ) -> None:
-    messages = list_messages(
-        client=client,
-        conversation_id=conversation_id,
-    )
+    messages = [
+        message
+        for message in visible_messages(
+            list_messages(
+                client=client,
+                conversation_id=conversation_id,
+            )
+        )
+        if str(message.get("content", "")).strip()
+    ]
 
     if not messages:
         print("\nEsta conversa ainda não possui mensagens.")
@@ -121,12 +132,12 @@ async def chat_loop(
                 conversation_id=conversation["id"],
                 content=content,
             )
-        except Exception as error:
-            print(
-                "\nNão foi possível gerar a resposta. "
-                "Você pode enviar a mesma mensagem novamente."
-            )
-            print(f"Detalhes: {error}")
+        except TurnFailedError as error:
+            # Mensagem amigável; o detalhe técnico fica só no log.
+            print(f"\nAssistente: {error.user_message}")
+            continue
+        except Exception:
+            print(f"\nAssistente: {TURN_FAILED_MESSAGE}")
             continue
 
         print(

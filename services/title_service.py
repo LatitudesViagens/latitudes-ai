@@ -28,8 +28,9 @@ MAX_CONTEXT_CHARACTERS = 1500
 
 TITLE_INSTRUCTION = (
     "Você cria títulos para conversas de uma assistente corporativa de "
-    "viagens. Leia a pergunta do usuário e o início da resposta e escreva "
-    "um título curto, em português do Brasil, que resuma o assunto. "
+    "viagens. Leia o pedido do usuário (e o início da resposta, quando "
+    "houver) e escreva um título curto, em português do Brasil, que resuma "
+    "o que foi pedido, sem copiar a frase do usuário. "
     "Regras: de 2 a 6 palavras; sem aspas, emojis, dois-pontos ou ponto "
     "final; primeira letra maiúscula e o restante em minúsculas, exceto "
     "nomes próprios. "
@@ -84,10 +85,10 @@ def generate_conversation_title(
     answer: str,
 ) -> str | None:
     """Gera um título curto; retorna None se nenhum modelo responder."""
-    contents = (
-        f"PERGUNTA DO USUÁRIO:\n{_truncate(question)}\n\n"
-        f"INÍCIO DA RESPOSTA:\n{_truncate(answer)}"
-    )
+    contents = f"PERGUNTA DO USUÁRIO:\n{_truncate(question)}"
+
+    if answer.strip():
+        contents += f"\n\nINÍCIO DA RESPOSTA:\n{_truncate(answer)}"
 
     for model in TITLE_MODELS:
         try:

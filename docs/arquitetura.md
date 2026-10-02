@@ -130,7 +130,7 @@ A arquitetura-alvo mantém a aplicação monolítica durante a próxima fase par
 | **Problema**               | **Evidência observada**                                                              | **Tratamento**                                                                                                                                    |
 |----------------------------|--------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | Sessão não persistente     | Após recarregar ou enviar anexo, alguns usuários precisam autenticar-se novamente.   | Prioridade alta. Revisar tokens e renovação no Supabase; a VM elimina parte da instabilidade de execução, mas não substitui a correção da sessão. |
-| Primeiro envio falha       | Em alguns testes, a pergunta ou o chat só apareceu após o segundo envio.             | Adicionar idempotência, persistência antes da chamada ao modelo e estados explícitos de processamento/erro.                                       |
+| Primeiro envio falha       | Em alguns testes, a pergunta ou o chat só apareceu após o segundo envio.             | Resolvido em 02/10/2026 (seção 12): pergunta salva antes da IA, status por turno e novas tentativas no mesmo registro. Requer a migração 008.      |
 | Upload de imagem falha     | Arquivos próximos de 3 MB exibiram erro ainda no seletor da Vercel.                  | Aplicar limite compatível no piloto, compressão/validação no cliente e upload direto ao Supabase Storage.                                         |
 | Imagens e avatar quebrados | Logo ou anexos aparecem como imagem indisponível, especialmente em outro navegador.  | Servir a logo por URL estável e usar URLs assinadas do Storage, evitando mídia mantida apenas na memória do processo.                             |
 | Latência variável          | Respostas variaram de poucos segundos a mais de 40 segundos; houve 503 e timeouts.   | No OpenRouter, configurar timeout por tarefa, fallback rápido, telemetria e limite de custo.                                                      |
@@ -255,7 +255,27 @@ O piloto cumpriu o objetivo de validar o produto e revelou os pontos que precisa
 | Prompt                | Não inventar dados pessoais (usa marcadores como [Nome do cliente]); perguntar só o essencial.                                                                                                                                             |
 | LGPD                  | Roteiros com dados de clientes (nomes, contatos, documentos, reservas, saúde ou restrições ligadas a uma pessoa) não podem ser publicados na memória coletiva: a ficha bloqueia a publicação e, se a verificação falhar, bloqueia também. Aprovado por Isabelle em 01/10/2026. |
 
+## 02/10/2026 — envio resistente a falhas
+
+| **Tema**              | **O que mudou**                                                                                                                                                                                                                           |
+|-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Causa da 1ª mensagem  | A pergunta só era gravada quando a chamada ao modelo já tinha começado; qualquer interrupção antes disso (clique, reconexão do WebSocket, erro no Supabase) a perdia, e numa conversa nova deixava a conversa vazia.                       |
+| Salvar antes da IA    | Pergunta e resposta reservada são gravadas antes de qualquer outra etapa. Cada turno tem status (pendente, processando, concluída, erro, cancelada) no registro de resposta.                                                               |
+| Novas tentativas      | 2 no modelo principal (espera de 2 s e 4 s) e 1 no fallback, sempre no mesmo registro de resposta. Erros de conta (401/402) param na hora; erros do modelo (400/404) pulam para o fallback. Timeouts: 60 s (principal) e 90 s (fallback). |
+| Interrupções          | "Parar" ou recarregar marca o turno como interrompido na hora; turnos parados por mais de ~2 min viram erro ao abrir a conversa. Botões Tentar novamente e Cancelar (o texto volta ao campo).                                              |
+| Registro de tentativas| Tabela `message_attempts` (modelo, nº, duração, status, tipo de erro, tokens; custo reservado para o controle de custos).                                                                                                                 |
+| Banco                 | Migração 008: colunas `status`, `reply_to`, `updated_at` em `messages`; permissão de atualizar só respostas do assistente nas próprias conversas; tabela `message_attempts` com RLS.                                                       |
+| Segundo plano         | A IA passou a rodar fora da execução da tela: o Streamlit não conseguia interromper o script enquanto ele esperava a IA ("Parar" não funcionava; trocar de conversa misturava telas). Agora a tela só acompanha a tarefa e o botão Parar fica ao lado do campo de mensagem. Cada tarefa usa a própria conexão com o Supabase (o cliente usa HTTP/2 e travava quando compartilhado entre threads). |
+| Tempos                | `AGORA_LOG_TEMPOS=1` grava os tempos de cada etapa em `logs/agora-tempos.log`. Medição local: tela montada em ~3–4 s (2 s conferindo o login no Supabase, 1 s na 1ª lista de conversas); a abertura total de 8–17 s inclui partida a frio do servidor e o Kaspersky. Medir de novo no Azure. |
+| Ajustes de interface  | Sem menu "Exportar" (documentos só quando pedidos); fontes consultadas como rodapé; título resume o pedido e é gerado em paralelo à resposta.                                                                                              |
+
 **Pendências para a próxima sessão**
+
+- **Pendências da interface (resolver antes de liberar para a empresa):**
+  - O 1º clique em "Tentar novamente" (e às vezes em "Parar") se perde: o registro de tempos mostra só um clique chegando ao servidor, e esse funciona na hora. Já tentado sem sucesso: botão Parar dentro do fragmento que atualiza a cada 1 s; trocar o fragmento por um laço de espera no fim do script (desfeito). Suspeita: limitação do Streamlit com fragmentos `run_every` (pedidos de atualização juntados com o clique) ou elemento recriado entre execuções.
+  - Ao enviar, a tela não fica no fim da conversa: para na mensagem enviada em vez de acompanhar "Preparando a resposta" e a resposta.
+  - "Preparando a resposta" aparece duplicado por um instante logo após o envio.
+  - Abertura lenta no servidor local (8–17 s); conferir no Azure, com o servidor na mesma região do Supabase.
 
 - Confirmar com o programador/Dedalus: serviço do Azure (Container Apps, App Service ou VM), branch de deploy e cadastro de `OPENROUTER_API_KEY`.
 - Plano de rollback recomendado: tags de versão (`v1.0`…), branch dedicada à produção e, no Azure, revisões/slots ou imagem anterior guardada.
