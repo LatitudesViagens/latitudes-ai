@@ -1,0 +1,74 @@
+# Deploy da ÁGORA (latitudes-ai, Python 3.13 + Streamlit) no Azure App Service app-agora-prd.
+# O Azure instala o requirements.txt sozinho no deploy (SCM_DO_BUILD_DURING_DEPLOYMENT=true)
+# e sobe o Streamlit pelo "Comando de inicialização" configurado no Web App.
+#
+# Pré-requisitos neste repositório (Settings -> Secrets and variables -> Actions):
+#   Secrets:   AZURE_AGORA_PUBLISH_PROFILE  (perfil de publicação do app-agora-prd)
+#   Variables: AGORA_URL  (endereço público, ex.: https://entremundos.latitudes.com.br/agora, sem barra no final)
+#
+# Se o suporte desativar o "perfil de publicação" (autenticação básica), troque o passo
+# de deploy por azure/login com OIDC; o suporte fornece client-id, tenant-id e subscription-id.
+
+name: Deploy Azure (ÁGORA)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/**'   # mudar só o workflow não publica de novo
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch a publicar (ex.: main ou migracao-ferramentas-pagas)'
+        required: true
+        default: 'main'
+
+concurrency:
+  group: deploy-agora
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'LatitudesViagens/latitudes-ai'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # push na main publica a main; "Run workflow" publica a branch escolhida
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Confere antes de publicar: se alguma dependência não instala ou o código
+      # tem erro de sintaxe, o deploy para aqui e a produção continua como está.
+      - name: Conferir dependências e código
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m compileall -q .
+          python -c "import streamlit, google.adk, supabase, tavily; print('dependencias ok')"
+
+      - name: Montar pacote
+        run: |
+          rm -rf .git .github .env .vercelignore Dockerfile.vercel
+          find . -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+      - name: Publicar no Azure
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: app-agora-prd
+          slot-name: Production
+          package: .
+          publish-profile: ${{ secrets.AZURE_AGORA_PUBLISH_PROFILE }}
+
+      - name: Conferir produção
+        if: ${{ vars.AGORA_URL != '' }}
+        run: |
+          sleep 60
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --retry 10 --retry-delay 15 --retry-all-errors "${{ vars.AGORA_URL }}/_stcore/health" || true)
+          echo "/_stcore/health -> $CODE (esperado 200)"
+          if [ "$CODE" != "200" ]; then echo "::warning::A ÁGORA não respondeu 200. Veja o Log stream do app-agora-prd."; fi
