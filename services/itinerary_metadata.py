@@ -5,6 +5,7 @@ import re
 from dotenv import load_dotenv
 import litellm
 
+from services.custos import note_usage
 from latitudes_agent.agent import (
     FALLBACK_MODEL,
     PRIMARY_MODEL,
@@ -151,6 +152,11 @@ def extract_itinerary_metadata(
             )
             continue
 
+        note_usage(
+            purpose="ficha_publicacao",
+            model=model,
+            response=response,
+        )
         metadata = _parse_metadata(
             response.choices[0].message.content or ""
         )

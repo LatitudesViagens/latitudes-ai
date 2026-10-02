@@ -32,6 +32,7 @@ from agent_tools.image_search import (
     user_requested_images,
 )
 from latitudes_agent.agent import fallback_agent, root_agent
+from services.custos import track_attempt_cost
 from services.settings import RetrySettings, load_retry_settings
 
 
@@ -489,6 +490,7 @@ def _notify_attempt_end(
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
             "reasoning_tokens": usage.get("reasoning_tokens"),
+            "cost_usd": usage.get("cost_usd"),
         },
     )
 
@@ -698,6 +700,8 @@ async def stream_agent(
         IMAGE_BUDGET.set([image_limit])
 
         usage: dict = {}
+        # O custo de cada chamada ao modelo é somado em usage["cost_usd"].
+        track_attempt_cost(usage)
         started_at = datetime.now(timezone.utc)
         attempt_started_at = time.perf_counter()
         attempt_error: BaseException | None = None

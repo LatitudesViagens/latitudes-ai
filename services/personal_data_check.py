@@ -12,6 +12,7 @@ import re
 from dotenv import load_dotenv
 import litellm
 
+from services.custos import note_usage
 from latitudes_agent.agent import (
     FALLBACK_MODEL,
     PRIMARY_MODEL,
@@ -141,6 +142,11 @@ def find_client_data(text: str) -> PersonalDataResult:
             )
             continue
 
+        note_usage(
+            purpose="verificacao_lgpd",
+            model=model,
+            response=response,
+        )
         result = _parse_check(response.choices[0].message.content or "")
 
         if result is None:

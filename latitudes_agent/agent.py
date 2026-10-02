@@ -10,6 +10,7 @@ import litellm
 from agent_tools.document_generator import generate_document
 from agent_tools.image_search import search_images
 from agent_tools.web_search import search_web
+from services.llm_cost_client import CostTrackingLiteLLMClient
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,9 +52,11 @@ def model_options(model: str) -> dict:
 
 def _build_model(model: str) -> LiteLlm:
     # As novas tentativas são controladas por services/agent_runner.py.
+    # O cliente guarda o custo informado pelo OpenRouter (o ADK o descarta).
     return LiteLlm(
         model=model,
         num_retries=0,
+        llm_client=CostTrackingLiteLLMClient(),
         **model_options(model),
     )
 

@@ -4,6 +4,7 @@ import re
 from dotenv import load_dotenv
 import litellm
 
+from services.custos import note_usage
 from latitudes_agent.agent import (
     FALLBACK_MODEL,
     PRIMARY_MODEL,
@@ -116,6 +117,11 @@ def generate_conversation_title(
             )
             continue
 
+        note_usage(
+            purpose="titulo",
+            model=model,
+            response=response,
+        )
         title = _clean_title(
             response.choices[0].message.content or ""
         )

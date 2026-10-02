@@ -460,3 +460,53 @@ hr {
 .stButton > button:hover {
     opacity: 1;
 }
+
+/* Busca de conversas (barra lateral): texto escuro sobre fundo claro. */
+
+[data-testid="stSidebar"] .st-key-conversation_search [data-testid="stTextInputRootElement"] {
+    border: 1px solid var(--latitudes-border);
+    border-radius: 10px;
+    background: var(--latitudes-white);
+    overflow: hidden;
+}
+
+[data-testid="stSidebar"] .st-key-conversation_search input {
+    min-height: 42px;
+    border: 0;
+    background: var(--latitudes-white);
+    color: var(--latitudes-text) !important;
+    caret-color: var(--latitudes-olive-dark);
+    -webkit-text-fill-color: var(--latitudes-text);
+}
+
+[data-testid="stSidebar"] .st-key-conversation_search input::placeholder {
+    color: var(--latitudes-muted) !important;
+    -webkit-text-fill-color: var(--latitudes-muted);
+}
+
+[data-testid="stSidebar"] .st-key-conversation_search [data-testid="stTextInputIcon"] {
+    background: var(--latitudes-white);
+}
+
+[data-testid="stSidebar"] .st-key-conversation_search [data-testid="stTextInputIcon"] *,
+[data-testid="stSidebar"] .st-key-conversation_search [data-testid="stIconMaterial"] {
+    color: var(--latitudes-olive-dark) !important;
+}
+
+[data-testid="stSidebar"] .st-key-clear_conversation_search button {
+    min-height: 32px !important;
+    padding: 2px 8px !important;
+    border: none !important;
+    background: transparent !important;
+    opacity: 0.85;
+}
+
+/* Modelos de prompt na conversa vazia: título centralizado. */
+
+.prompt-templates-title {
+    margin: 4px 0 10px;
+    color: var(--latitudes-muted);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-align: center;
+}

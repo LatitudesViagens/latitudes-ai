@@ -9,6 +9,7 @@ from database.attachments import (
     hydrate_chat_attachments,
     upload_generated_files,
 )
+from database.ai_usage import log_ai_usage
 from database.conversations import rename_conversation
 from database.message_attempts import log_attempt
 from database.messages import (
@@ -22,6 +23,7 @@ from database.messages import (
     list_messages,
     update_reply,
 )
+from services.custos import collect_usage, cost_fields
 from services.settings import RetrySettings, load_retry_settings
 from services.timing_log import log_event
 
@@ -522,9 +524,16 @@ def update_title_from_first_question(
 
     from services.title_service import generate_conversation_title
 
-    title = generate_conversation_title(
-        question=str(questions[0].get("content", "")),
-        answer="",
+    with collect_usage() as usages:
+        title = generate_conversation_title(
+            question=str(questions[0].get("content", "")),
+            answer="",
+        )
+
+    log_ai_usage(
+        client=client,
+        usages=usages,
+        conversation_id=conversation_id,
     )
 
     if not title:
@@ -543,6 +552,7 @@ def _attempt_listener(
     client: Client,
     reply_id: str,
     conversation_id: str,
+    knowledge_entry_id: str | None = None,
 ):
     """Registra cada tentativa e mantém o turno "vivo" enquanto roda."""
 
@@ -562,16 +572,112 @@ def _attempt_listener(
             f"[IA] reply={str(reply_id)[:8]} tentativa={event.get('attempt_number')} "
             f"{event.get('model_role')} {event.get('model')} "
             f"status={event.get('status')} {(event.get('duration_ms') or 0) / 1000:.2f}s "
-            f"erro={event.get('error_type')}"
+            f"erro={event.get('error_type')} custo_usd={event.get('cost_usd')}"
         )
         log_attempt(
             client=client,
             message_id=reply_id,
             conversation_id=conversation_id,
-            attempt=event,
+            # Custo em R$ pela cotação do dia (PTAX ou reserva).
+            attempt={
+                **event,
+                **cost_fields(event.get("cost_usd")),
+                "knowledge_entry_id": knowledge_entry_id,
+            },
         )
 
     return listener
+
+
+def _find_knowledge_match(
+    client: Client,
+    conversation_id: str,
+    question: str,
+    user_message: dict,
+    first_question: bool,
+):
+    """Procura uma resposta aprovada parecida (services/base_conhecimento).
+    Perguntas com anexo seguem direto para a IA. Nunca lança erro."""
+    if user_message.get("attachments"):
+        return None
+
+    try:
+        from services.base_conhecimento import find_knowledge_match
+
+        with collect_usage() as usages:
+            knowledge_match = find_knowledge_match(
+                client=client,
+                question=question,
+                first_question=first_question,
+            )
+
+        log_ai_usage(
+            client=client,
+            usages=usages,
+            conversation_id=conversation_id,
+        )
+        return knowledge_match
+    except Exception as error:
+        print(f"[BASE] Falha ao consultar a base: {type(error).__name__}", flush=True)
+        return None
+
+
+def _answer_from_knowledge_base(
+    client: Client,
+    conversation_id: str,
+    reply_id: str,
+    knowledge_match,
+) -> str | None:
+    """Responde com a resposta aprovada, sem chamar a IA (custo zero)."""
+    from services.base_conhecimento import DIRECT_ANSWER_NOTE
+
+    started_at = datetime.now(timezone.utc)
+    content = knowledge_match.answer.strip() + DIRECT_ANSWER_NOTE
+    completed = complete_reply(
+        client=client,
+        reply_id=reply_id,
+        content=content,
+        sources=[
+            {
+                "type": "knowledge_entry",
+                "id": knowledge_match.entry_id,
+                "mode": "direta",
+                "similarity": round(knowledge_match.similarity, 4),
+            }
+        ],
+        only_if_active=True,
+    )
+
+    try:
+        log_attempt(
+            client=client,
+            message_id=reply_id,
+            conversation_id=conversation_id,
+            attempt={
+                "attempt_number": 1,
+                "model_role": "base_conhecimento",
+                "model": "base_conhecimento",
+                "status": "sucesso",
+                "duration_ms": int(
+                    (datetime.now(timezone.utc) - started_at).total_seconds()
+                    * 1000
+                ),
+                "started_at": started_at.isoformat(),
+                "simulated": False,
+                "cost_usd": 0,
+                "cost_brl": 0,
+                "knowledge_entry_id": knowledge_match.entry_id,
+            },
+        )
+    except Exception as error:
+        print(f"[BASE] Falha ao registrar a resposta da base: {type(error).__name__}", flush=True)
+
+    log_event(
+        f"[BASE] reply={str(reply_id)[:8]} respondida pela base "
+        f"(similaridade {knowledge_match.similarity:.3f})"
+    )
+
+    return content if completed is not None else None
 
 
 async def run_turn_stream(
@@ -616,6 +722,31 @@ async def run_turn_stream(
         content="",
     )
 
+    agent_history = _history_for_agent(messages, user_message)
+    knowledge_match = _find_knowledge_match(
+        client=client,
+        conversation_id=conversation_id,
+        question=question,
+        user_message=user_message,
+        first_question=not any(
+            message.get("role") == "assistant"
+            for message in agent_history
+        ),
+    )
+
+    if knowledge_match is not None and knowledge_match.mode == "direta":
+        content = _answer_from_knowledge_base(
+            client=client,
+            conversation_id=conversation_id,
+            reply_id=reply_id,
+            knowledge_match=knowledge_match,
+        )
+
+        if content:
+            yield content
+
+        return
+
     from services import agent_runner
 
     response_chunks = []
@@ -625,10 +756,16 @@ async def run_turn_stream(
     try:
         hydrated_history = _prepare_history_for_agent(
             client=client,
-            history=_history_for_agent(messages, user_message),
+            history=agent_history,
             question=question,
             has_current_attachments=bool(user_message.get("attachments")),
         )
+
+        if knowledge_match is not None:
+            # Resposta aprovada parecida: a IA responde usando-a como base.
+            from services.base_conhecimento import build_context_message
+
+            hydrated_history.append(build_context_message(knowledge_match))
         current_attachments = hydrate_chat_attachments(
             client=client,
             attachments=user_message.get("attachments") or [],
@@ -646,6 +783,9 @@ async def run_turn_stream(
                 client=client,
                 reply_id=reply_id,
                 conversation_id=conversation_id,
+                knowledge_entry_id=(
+                    knowledge_match.entry_id if knowledge_match else None
+                ),
             ),
         ):
             response_chunks.append(chunk)
@@ -666,6 +806,18 @@ async def run_turn_stream(
         raise TurnFailedError(TURN_FAILED_MESSAGE) from error
 
     assistant_content = "".join(response_chunks).strip()
+
+    if knowledge_match is not None:
+        # A tela mostra que a resposta se baseou na base aprovada pelo TI.
+        sources.append(
+            {
+                "type": "knowledge_entry",
+                "id": knowledge_match.entry_id,
+                "mode": "contexto",
+                "similarity": round(knowledge_match.similarity, 4),
+            }
+        )
+
     saved_files = _save_generated_files(
         client=client,
         user_id=user_id,

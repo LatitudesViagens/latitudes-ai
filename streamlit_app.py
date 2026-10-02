@@ -30,6 +30,17 @@ if not IS_VERCEL:
     from streamlit_cookies_manager import EncryptedCookieManager
 
 from database.auth import sign_in
+from admin.painel import (
+    close_admin_panel,
+    is_admin_panel_open,
+    show_admin_panel,
+    show_admin_sidebar_button,
+)
+from admin.base_conhecimento import show_suggestion_button
+from admin.senhas import needs_password_change, show_password_change_screen
+from ui.busca import show_conversation_search
+from ui.modelos_prompt import show_template_picker
+from database.ai_usage import log_ai_usage
 from database.client import get_supabase_client
 from database.attachments import (
     download_chat_attachment,
@@ -72,6 +83,7 @@ from database.messages import (
     STATUS_ERROR,
     get_message,
 )
+from services.custos import collect_usage
 from services.document_export import looks_like_itinerary
 from services.timing_log import log_duration, log_event
 from services.turn_worker import warm_up
@@ -535,7 +547,7 @@ def show_login() -> None:
         st.html(
             """
             <div class="login-heading">
-                <h1>Bem-vinda à<br>ÁGORA</h1>
+                <h1>Bem-vindo(a) à<br>ÁGORA</h1>
                 <p>
                     Entre com sua conta corporativa para continuar.
                 </p>
@@ -558,17 +570,6 @@ def show_login() -> None:
                 "Entrar",
                 use_container_width=True,
             )
-
-        st.button(
-            "Esqueci minha senha",
-            type="tertiary",
-            use_container_width=True,
-            disabled=True,
-            help=(
-                "Disponível após a configuração "
-                "do envio de e-mails."
-            ),
-        )
 
         if submitted:
             if not email.strip() or not password:
@@ -883,12 +884,21 @@ def _get_client_data_check(message: dict):
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
-    with st.spinner("Verificando dados pessoais no roteiro..."):
+    with (
+        collect_usage() as usages,
+        st.spinner("Verificando dados pessoais no roteiro..."),
+    ):
         try:
             result = find_client_data(str(message.get("content", "")))
         except Exception:
             traceback.print_exc()
             result = PersonalDataResult(found=None)
+
+    log_ai_usage(
+        client=st.session_state.client,
+        usages=usages,
+        conversation_id=message.get("conversation_id"),
+    )
 
     # Falhas de verificação não ficam em cache: reabrir a ficha tenta de novo.
     if result.found is not None:
@@ -934,7 +944,10 @@ def _get_publication_suggestions(
     except Exception:
         traceback.print_exc()
 
-    with st.spinner("Preenchendo a ficha com as informações do roteiro..."):
+    with (
+        collect_usage() as usages,
+        st.spinner("Preenchendo a ficha com as informações do roteiro..."),
+    ):
         try:
             suggestions = extract_itinerary_metadata(
                 content=str(message.get("content", "")),
@@ -943,6 +956,12 @@ def _get_publication_suggestions(
         except Exception:
             traceback.print_exc()
             suggestions = dict(EMPTY_METADATA)
+
+    log_ai_usage(
+        client=st.session_state.client,
+        usages=usages,
+        conversation_id=message.get("conversation_id"),
+    )
 
     st.session_state[cache_key] = suggestions
     return suggestions
@@ -1067,8 +1086,17 @@ def show_publish_itinerary_dialog(
 
     from services.personal_data_check import find_client_data
 
-    with st.spinner("Verificando dados pessoais..."):
+    with (
+        collect_usage() as usages,
+        st.spinner("Verificando dados pessoais..."),
+    ):
         form_check = find_client_data(form_text)
+
+    log_ai_usage(
+        client=client,
+        usages=usages,
+        conversation_id=conversation.get("id"),
+    )
 
     if form_check.found is True:
         _show_client_data_block(form_check.items)
@@ -1904,6 +1932,18 @@ def answer_shared_choice(
     st.rerun()
 
 
+def select_conversation(conversation_id: str) -> None:
+    """Abre uma conversa (lista da barra lateral ou resultado da busca)."""
+    st.session_state.selected_conversation_id = conversation_id
+    st.session_state.new_conversation_mode = False
+    st.session_state.conversation_to_delete = None
+    st.session_state.conversation_to_rename = None
+    st.session_state.conversation_visibility_target = None
+    st.session_state.message_to_publish = None
+    st.session_state.scroll_to_bottom = True
+    close_admin_panel()
+
+
 def show_authenticated_area() -> None:
     client = st.session_state.client
     user_id = st.session_state.user_id
@@ -2108,16 +2148,25 @@ def show_authenticated_area() -> None:
             st.session_state.conversation_to_rename = None
             st.session_state.conversation_visibility_target = None
             st.session_state.message_to_publish = None
+            close_admin_panel()
             st.rerun()
 
-        st.caption("CONVERSAS")
+        searching = show_conversation_search(
+            client=client,
+            on_select=select_conversation,
+        )
 
-        if not conversations:
+        if not searching:
+            st.caption("CONVERSAS")
+
+        if not conversations and not searching:
             st.caption(
                 "Nenhuma conversa criada."
             )
 
-        for conversation in conversations:
+        # Durante a busca, só os resultados aparecem; apagando a busca, a
+        # lista volta.
+        for conversation in [] if searching else conversations:
             conversation_id = conversation["id"]
             is_selected = (
                 conversation_id
@@ -2145,15 +2194,7 @@ def show_authenticated_area() -> None:
                         else "secondary"
                     ),
                 ):
-                    st.session_state.selected_conversation_id = (
-                        conversation_id
-                    )
-                    st.session_state.new_conversation_mode = False
-                    st.session_state.conversation_to_delete = None
-                    st.session_state.conversation_to_rename = None
-                    st.session_state.conversation_visibility_target = None
-                    st.session_state.message_to_publish = None
-                    st.session_state.scroll_to_bottom = True
+                    select_conversation(conversation_id)
                     st.rerun()
 
             with pin_column:
@@ -2269,6 +2310,8 @@ def show_authenticated_area() -> None:
 
         st.divider()
 
+        show_admin_sidebar_button(client)
+
         st.caption("Usuário conectado")
         st.write(st.session_state.user_email)
 
@@ -2277,6 +2320,10 @@ def show_authenticated_area() -> None:
             use_container_width=True,
         ):
             logout()
+
+    if is_admin_panel_open():
+        show_admin_panel(client)
+        return
 
     conversation_to_delete = (
         st.session_state.conversation_to_delete
@@ -2405,6 +2452,10 @@ def show_authenticated_area() -> None:
 
         show_flash_message()
         show_empty_conversation(flower_uri)
+        show_template_picker(
+            client=client,
+            on_choose=restore_chat_input,
+        )
 
         submission = show_chat_input("Digite sua mensagem...")
         prompt, uploaded_files = parse_chat_submission(submission)
@@ -2557,6 +2608,12 @@ def show_authenticated_area() -> None:
     if not messages:
         show_empty_conversation(flower_uri)
 
+        if open_turn is None:
+            show_template_picker(
+                client=client,
+                on_choose=restore_chat_input,
+            )
+
     latest_assistant_message = next(
         (
             message
@@ -2636,6 +2693,51 @@ def show_authenticated_area() -> None:
                         "message_id": message["id"],
                     }
                     st.rerun()
+
+                # Sugestão para a base de conhecimento: só na última
+                # resposta, e não nas que já vieram da base.
+                knowledge_source = next(
+                    (
+                        source
+                        for source in message.get("sources") or []
+                        if isinstance(source, dict)
+                        and source.get("type") == "knowledge_entry"
+                    ),
+                    None,
+                )
+                is_from_knowledge_base = knowledge_source is not None
+
+                if (
+                    knowledge_source is not None
+                    and knowledge_source.get("mode") == "contexto"
+                ):
+                    # (A resposta direta já traz o aviso no próprio texto.)
+                    st.caption(
+                        "Baseada em uma resposta da base de conhecimento, "
+                        "aprovada pelo TI."
+                    )
+
+                if (
+                    latest_assistant_message is not None
+                    and message.get("id") == latest_assistant_message.get("id")
+                    and _get_shared_offer(message) is None
+                    and not is_from_knowledge_base
+                ):
+                    question_message = next(
+                        (
+                            item
+                            for item in all_messages
+                            if str(item.get("id")) == str(message.get("reply_to"))
+                        ),
+                        None,
+                    )
+
+                    if question_message is not None:
+                        show_suggestion_button(
+                            client=client,
+                            message=message,
+                            question=str(question_message.get("content", "")),
+                        )
 
     pending_offer = _get_shared_offer(
         messages[-1] if messages else None
@@ -3011,6 +3113,22 @@ try:
 
     if not st.session_state.authenticated:
         show_login()
+        st.stop()
+
+    # Senha redefinida pelo TI: só a tela de criar senha nova até trocar.
+    if needs_password_change(
+        client=st.session_state.client,
+        user_id=st.session_state.user_id,
+    ):
+        show_password_change_screen(st.session_state.client)
+
+        if st.button(
+            "Sair",
+            type="tertiary",
+            key="forced_password_logout",
+        ):
+            logout()
+
         st.stop()
 
     show_authenticated_area()

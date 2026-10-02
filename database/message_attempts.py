@@ -7,10 +7,10 @@ def log_attempt(
     conversation_id: str,
     attempt: dict,
 ) -> None:
-    """Registra uma tentativa de resposta (migração 008).
+    """Registra uma tentativa de resposta (migrações 008 e 009).
 
-    Os campos de tokens e custo ficam vazios quando o provedor não os
-    informa; serão usados no controle de custos.
+    Tokens e custo ficam vazios quando o provedor não os informa. O custo em
+    R$ e a cotação vêm de services.custos.cost_fields.
     """
     record = {
         "message_id": str(message_id),
@@ -30,6 +30,11 @@ def log_attempt(
         "completion_tokens",
         "reasoning_tokens",
         "cost_usd",
+        "cost_brl",
+        "usd_brl_rate",
+        "rate_date",
+        "rate_source",
+        "knowledge_entry_id",
     ):
         if attempt.get(key) is not None:
             record[key] = attempt[key]

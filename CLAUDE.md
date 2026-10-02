@@ -16,7 +16,7 @@ Migração para ferramentas pagas na branch `migracao-ferramentas-pagas`: Supaba
 
 ## Mapa do código
 
-Camadas: `streamlit_app.py` / `main.py` → `services/chat_service.py` → `services/agent_runner.py` → `latitudes_agent/agent.py` (+ `agent_tools/`). Os módulos de `database/` recebem um `client` Supabase autenticado.
+Camadas: `streamlit_app.py` / `main.py` → `services/chat_service.py` → `services/agent_runner.py` → `latitudes_agent/agent.py` (+ `agent_tools/`). Os módulos de `database/` recebem um `client` Supabase autenticado. Código novo fica fora do `streamlit_app.py`: painel do TI em `admin/`, partes da tela da conversa em `ui/`.
 
 | Área | Onde |
 |---|---|
@@ -37,6 +37,11 @@ Camadas: `streamlit_app.py` / `main.py` → `services/chat_service.py` → `serv
 | Ficha de publicação | `services/itinerary_metadata.py` sugere os campos via IA (uma vez por mensagem, em `st.session_state`); `streamlit_app._get_publication_suggestions` |
 | Ferramenta Tavily | `agent_tools/web_search.py` (`search_web`); fontes coletadas em `agent_runner._collect_web_sources` |
 | Memória coletiva | `database/shared_itineraries.py`; UI em `streamlit_app.py` (`show_publish_itinerary_dialog`, `create_shared_itinerary_offer`, `show_conversation_visibility_dialog`) |
+| Custos e painel do TI | `services/custos.py` (cotação PTAX com cache diário e reserva, conversão para R$, `collect_usage`/`note_usage` para chamadas avulsas); `services/llm_cost_client.py` guarda o `usage.cost` do OpenRouter, que o ADK descarta; custo das respostas em `message_attempts`, das chamadas avulsas (título, LGPD, ficha) em `ai_usage`. Painel em `admin/` (`painel.py` com o botão e as abas; `gastos.py` mostra só o total e o custo por modelo); papel conferido no banco por `database/roles.is_ti` (função `public.is_ti`, migração 009). `admin/supabase_admin.py` é o ÚNICO lugar que lê `SUPABASE_SERVICE_ROLE_KEY`, e só depois de conferir o papel TI |
+| Senhas (TI) | `admin/senhas.py`: o TI gera uma senha temporária (API admin, `supabase_admin.set_temporary_password`), o reset vai para `password_resets` e a obrigação para `password_change_required`. Enquanto houver obrigação, a pessoa só vê "Crie sua nova senha" (checagem no fim do `streamlit_app.py`, antes de `show_authenticated_area`). Quem apaga a obrigação é o servidor (`clear_own_password_requirement`, service_role, ID vindo do token), nunca a pessoa. Não há "Esqueci minha senha" na tela de login |
+| Base de conhecimento | `services/base_conhecimento.py` decide antes da IA (em `chat_service._find_knowledge_match`): similaridade ≥ `AGORA_BASE_LIMIAR_DIRETO` responde direto (só na 1ª pergunta da conversa), ≥ `AGORA_BASE_LIMIAR_CONTEXTO` entra como contexto interno, abaixo segue normal; falha = fluxo normal. Base vazia não calcula embedding (cache de 60 s, limpo quando o TI muda a base). Embeddings em `services/embeddings.py` (OpenRouter, 768 dimensões; custo estimado pelos tokens). Dados em `database/knowledge_entries.py`; aba do TI e botão "Sugerir para a base" (com trava LGPD) em `admin/base_conhecimento.py`. Nada entra sem aprovação do TI |
+| Busca de conversas | `ui/busca.py` (barra lateral) → `database/search.py` → função SQL `search_conversations` (português, sem acento, RLS) |
+| Modelos de prompt | TI cria/edita em `admin/modelos_prompt.py`; a pessoa escolhe na conversa vazia (`ui/modelos_prompt.py`) e o texto vai para o campo via `restore_chat_input`. Dados em `database/prompt_templates.py` |
 | Migrações Supabase | `database/migrations/NNN_*.sql`, aplicadas manualmente no SQL Editor, em ordem; incluem as políticas RLS |
 | UI / assets | `streamlit_app.py` (arquivo único); `assets/` (CSS e imagens embutidas como data URI); `static/` servido em `/app/static/...` via `enableStaticServing` |
 
@@ -86,6 +91,10 @@ Carregadas de `latitudes_agent/.env` (não da raiz) por cada módulo via `load_d
 | `AGORA_ESPERA_INICIAL_SEGUNDOS` | opcional; padrão 2 (dobra a cada nova tentativa) |
 | `AGORA_LOG_TEMPOS` | opcional: `1` grava os tempos de cada etapa (login, conversas, mensagens, turno, tentativas da IA) em `logs/agora-tempos.log` (só tempos e IDs; `services/timing_log.py`). Sem ela, os tempos só vão para o terminal |
 | `AGORA_SIMULAR_FALHA` | só para testes: `erro`, `timeout` ou `vazia`, com `:todas` (padrão), `:principal` ou `:primeira`; não chama o modelo nas tentativas simuladas. Nunca definir em produção |
+| `AGORA_COTACAO_DOLAR_RESERVA` | cotação usada se a PTAX do Banco Central não responder (ex.: `5,40`); sem ela, o custo fica só em US$ |
+| `SUPABASE_SERVICE_ROLE_KEY` | só no servidor; lida apenas por `admin/supabase_admin.py` (e-mails no painel, reset de senha). Nunca exibir nem copiar |
+| `AGORA_MODELO_EMBEDDING` | opcional; padrão `openrouter/openai/text-embedding-3-small`. Trocar exige recalcular os embeddings aprovados e recalibrar os limiares |
+| `AGORA_BASE_LIMIAR_DIRETO` / `AGORA_BASE_LIMIAR_CONTEXTO` | opcionais; padrão 0,92 / 0,55 |
 | `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI` | não usadas pelo app desde a troca para o OpenRouter; só pelos scripts de diagnóstico antigos |
 | `COOKIES_PASSWORD` | `streamlit_app.py`; obrigatória fora da Vercel |
 | `VERCEL` | definida pela plataforma; ativa o stub de cookies |
