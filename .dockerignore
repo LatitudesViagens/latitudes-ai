@@ -2,6 +2,9 @@
 .github
 .venv
 .env
+.env.*
+**/.env
+**/.env.*
 latitudes_agent/.env
 .streamlit/secrets.toml
 .vercel
@@ -14,3 +17,5 @@ diagnostico_*.py
 comparar_modelos.py
 listar_modelos.py
 testar_modelo_*.py
+streamlit_app.backup.py
+Claude

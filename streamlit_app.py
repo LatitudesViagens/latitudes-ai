@@ -1,12 +1,21 @@
 import base64
-import asyncio
 from html import escape
 from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
+import time
 import traceback
+from urllib.parse import urlparse
+
+import truststore
+
+# Usa os certificados confiáveis do sistema operacional. Antivírus e
+# firewalls corporativos (como o Kaspersky) inspecionam HTTPS com um
+# certificado próprio que só o sistema conhece; sem isso, chamadas ao
+# OpenRouter falham por certificado inválido.
+truststore.inject_into_ssl()
 
 import streamlit as st
 from PIL import Image
@@ -21,6 +30,17 @@ if not IS_VERCEL:
     from streamlit_cookies_manager import EncryptedCookieManager
 
 from database.auth import sign_in
+from admin.painel import (
+    close_admin_panel,
+    is_admin_panel_open,
+    show_admin_panel,
+    show_admin_sidebar_button,
+)
+from admin.base_conhecimento import show_suggestion_button
+from admin.senhas import needs_password_change, show_password_change_screen
+from ui.busca import show_conversation_search
+from ui.modelos_prompt import show_template_picker
+from database.ai_usage import log_ai_usage
 from database.client import get_supabase_client
 from database.attachments import (
     download_chat_attachment,
@@ -42,11 +62,35 @@ from database.shared_itineraries import (
     publish_itinerary,
 )
 from services.chat_service import (
-    FAILED_RESPONSE,
-    INTERRUPTED_RESPONSE,
-    close_pending_response,
-    process_message_stream,
+    TurnInProgressError,
+    cancel_turn,
+    complete_reply,
+    find_open_turn,
+    is_turn_active,
+    message_status,
+    recover_stale_turns,
+    reserve_reply,
+    start_turn,
+    visible_messages,
 )
+from services.turn_worker import (
+    cancel_turn_job,
+    is_running as is_turn_job_running,
+    start_turn_job,
+)
+from database.messages import (
+    STATUS_DONE,
+    STATUS_ERROR,
+    get_message,
+)
+from services.custos import collect_usage
+from services.document_export import looks_like_itinerary
+from services.timing_log import log_duration, log_event
+from services.turn_worker import warm_up
+
+# services.personal_data_check e services.itinerary_metadata carregam o
+# LiteLLM e o agente (~4 s): são importados dentro das funções que os usam
+# e pré-carregados em segundo plano por warm_up().
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -99,7 +143,8 @@ st.set_page_config(
     page_title="ÁGORA | Latitudes AI",
     page_icon=page_icon,
     layout="wide",
-    initial_sidebar_state="expanded",
+    # "auto": aberta no computador, fechada no celular (abre pelo menu).
+    initial_sidebar_state="auto",
 )
 
 
@@ -154,6 +199,68 @@ else:
 
 AUTH_COOKIE_KEY = "auth_session"
 SELECTED_CONVERSATION_COOKIE_KEY = "selected_conversation_id"
+
+
+def escape_dollar_signs(text: str) -> str:
+    # O Markdown do Streamlit interpreta o trecho entre dois "$" como fórmula
+    # LaTeX; em "US$ 100 a US$ 200" isso muda a cor e some com espaços.
+    return text.replace("$", r"\$")
+
+
+_SOURCES_TITLE = re.compile(
+    r"^[ \t>*_#-]*fontes?\s+consultadas?\b[*_:\s]*",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s)\]>]+")
+
+
+def _source_label(line: str, link_text: str, url: str) -> str:
+    """Nome da fonte: o texto do link ou, se ele for o próprio endereço, o
+    rótulo antes dele (ex.: "**Wikipédia:** [https://...](https://...)")."""
+    if not link_text.lower().startswith(("http://", "https://")):
+        return link_text.strip(" *_")
+
+    before = line.split("[", 1)[0] if "[" in line else line.split(url, 1)[0]
+    label = before.strip(" \t*_-•:>")
+
+    return label or urlparse(url).netloc.removeprefix("www.")
+
+
+def split_sources_footer(content: str) -> tuple[str, str | None]:
+    """Separa a seção "Fontes consultadas" do fim da resposta e a devolve
+    como uma linha de rodapé, sem marcadores de tópico."""
+    matches = list(_SOURCES_TITLE.finditer(content or ""))
+
+    if not matches:
+        return content, None
+
+    start = matches[-1].start()
+    body = content[:start].rstrip().removesuffix("---").rstrip()
+    section = content[start:]
+
+    links = []
+    seen_urls = set()
+
+    for line in section.splitlines():
+        found = _MARKDOWN_LINK.findall(line) or [
+            (url, url) for url in _BARE_URL.findall(line)
+        ]
+
+        for link_text, url in found:
+            url = url.rstrip(".,;")
+
+            if url in seen_urls:
+                continue
+
+            seen_urls.add(url)
+            label = escape_dollar_signs(_source_label(line, link_text, url))
+            links.append(f"[{label}]({url})")
+
+    if not links:
+        return content, None
+
+    return body, "Fontes consultadas: " + " · ".join(links)
 
 
 def load_css() -> None:
@@ -282,6 +389,8 @@ def restore_authentication() -> None:
     if not stored_session:
         return
 
+    started = time.perf_counter()
+
     try:
         session_data = json.loads(stored_session)
         access_token = session_data["access_token"]
@@ -310,8 +419,9 @@ def restore_authentication() -> None:
         st.session_state.user_id = str(user.id)
         st.session_state.user_email = user.email
 
-        selected_conversation_id = cookies.get(
-            SELECTED_CONVERSATION_COOKIE_KEY
+        # Volta para a conversa que estava aberta (guardada no endereço).
+        selected_conversation_id = st.query_params.get(
+            SELECTED_CONVERSATION_QUERY_KEY
         )
 
         if selected_conversation_id:
@@ -320,51 +430,54 @@ def restore_authentication() -> None:
             )
 
         # set_session() pode renovar os tokens. Mantemos a atualização
-        # pendente e salvamos junto com o cookie da conversa selecionada,
+        # pendente e salvamos uma única vez por execução (sync abaixo),
         # evitando duas instâncias do componente no mesmo ciclo.
         persist_authentication(
             client,
             save_immediately=False,
         )
+        log_duration("[UI] login_restaurado", started)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         clear_persistent_authentication()
-    except Exception:
+    except Exception as error:
         # Uma falha temporária de rede não deve apagar uma sessão válida.
+        log_duration(
+            "[UI] login_restaurado_falhou",
+            started,
+            details=type(error).__name__,
+        )
         return
 
 
-def sync_selected_conversation_cookie() -> None:
+SELECTED_CONVERSATION_QUERY_KEY = "c"
+
+
+def sync_selected_conversation() -> None:
+    """Guarda a conversa selecionada no endereço da página (?c=...).
+
+    Assim o F5 volta para a mesma conversa. Antes isso ficava num cookie, mas
+    gravar o cookie faz o componente do navegador forçar uma atualização
+    extra da tela, que interrompia a troca de conversa e a 1ª mensagem.
+    """
     selected_conversation_id = (
         st.session_state.selected_conversation_id
     )
-    stored_conversation_id = cookies.get(
-        SELECTED_CONVERSATION_COOKIE_KEY
-    )
+    current_value = st.query_params.get(SELECTED_CONVERSATION_QUERY_KEY)
 
     # Enquanto a tela de nova conversa ainda está vazia, preservamos a
-    # seleção anterior no cookie. O novo ID só é persistido depois que a
-    # conversa for realmente criada.
-    if (
-        st.session_state.new_conversation_mode
-        and selected_conversation_id is None
+    # seleção anterior. O novo ID entra quando a conversa é criada.
+    if selected_conversation_id is not None:
+        selected_value = str(selected_conversation_id)
+
+        if current_value != selected_value:
+            st.query_params[SELECTED_CONVERSATION_QUERY_KEY] = selected_value
+    elif (
+        not st.session_state.new_conversation_mode
+        and current_value is not None
     ):
-        flush_cookie_changes()
-        return
+        del st.query_params[SELECTED_CONVERSATION_QUERY_KEY]
 
-    if selected_conversation_id is None:
-        if stored_conversation_id is not None:
-            del cookies[SELECTED_CONVERSATION_COOKIE_KEY]
-            mark_cookies_for_save()
-
-        flush_cookie_changes()
-        return
-
-    selected_value = str(selected_conversation_id)
-
-    if stored_conversation_id != selected_value:
-        cookies[SELECTED_CONVERSATION_COOKIE_KEY] = selected_value
-        mark_cookies_for_save()
-
+    # O cookie fica só para o login (ex.: tokens renovados).
     flush_cookie_changes()
 
 
@@ -435,7 +548,7 @@ def show_login() -> None:
         st.html(
             """
             <div class="login-heading">
-                <h1>Bem-vinda à<br>ÁGORA</h1>
+                <h1>Bem-vindo(a) à<br>ÁGORA</h1>
                 <p>
                     Entre com sua conta corporativa para continuar.
                 </p>
@@ -458,17 +571,6 @@ def show_login() -> None:
                 "Entrar",
                 use_container_width=True,
             )
-
-        st.button(
-            "Esqueci minha senha",
-            type="tertiary",
-            use_container_width=True,
-            disabled=True,
-            help=(
-                "Disponível após a configuração "
-                "do envio de e-mails."
-            ),
-        )
 
         if submitted:
             if not email.strip() or not password:
@@ -508,6 +610,7 @@ def logout() -> None:
     client = st.session_state.client
 
     clear_persistent_authentication()
+    st.query_params.clear()
 
     if client is not None:
         try:
@@ -751,6 +854,120 @@ def _destination_from_title(title: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+CLIENT_DATA_BLOCK_MESSAGE = (
+    "**Este roteiro não pode ser publicado:** ele contém dados de clientes. "
+    "Pela LGPD, dados de clientes não entram na memória coletiva; só o "
+    "roteiro pode ser publicado. Peça à ÁGORA uma versão do roteiro sem "
+    "dados pessoais e publique essa nova versão."
+)
+
+
+def _show_client_data_block(items: list[str]) -> None:
+    found = "".join(
+        f"\n- {escape_dollar_signs(item)}"
+        for item in items[:6]
+    )
+    st.error(
+        CLIENT_DATA_BLOCK_MESSAGE
+        + (f"\n\nEncontrado:{found}" if found else "")
+    )
+
+
+def _get_client_data_check(message: dict):
+    """Verificação LGPD do roteiro, feita uma vez por mensagem."""
+    from services.personal_data_check import (
+        PersonalDataResult,
+        find_client_data,
+    )
+
+    cache_key = f"client_data_check_{message['id']}"
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    with (
+        collect_usage() as usages,
+        st.spinner("Verificando dados pessoais no roteiro..."),
+    ):
+        try:
+            result = find_client_data(str(message.get("content", "")))
+        except Exception:
+            traceback.print_exc()
+            result = PersonalDataResult(found=None)
+
+    log_ai_usage(
+        client=st.session_state.client,
+        usages=usages,
+        conversation_id=message.get("conversation_id"),
+    )
+
+    # Falhas de verificação não ficam em cache: reabrir a ficha tenta de novo.
+    if result.found is not None:
+        st.session_state[cache_key] = result
+
+    return result
+
+
+def _get_publication_suggestions(
+    client,
+    conversation_id: str,
+    message: dict,
+) -> dict:
+    """Sugestões da IA para a ficha, calculadas uma vez por mensagem."""
+    from services.itinerary_metadata import (
+        EMPTY_METADATA,
+        extract_itinerary_metadata,
+    )
+
+    cache_key = f"publication_suggestions_{message['id']}"
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    question = ""
+
+    try:
+        conversation_messages = list_messages(
+            client=client,
+            conversation_id=conversation_id,
+        )
+        message_ids = [item.get("id") for item in conversation_messages]
+        message_index = message_ids.index(message["id"])
+
+        question = next(
+            (
+                str(item.get("content", ""))
+                for item in reversed(conversation_messages[:message_index])
+                if item.get("role") == "user"
+            ),
+            "",
+        )
+    except Exception:
+        traceback.print_exc()
+
+    with (
+        collect_usage() as usages,
+        st.spinner("Preenchendo a ficha com as informações do roteiro..."),
+    ):
+        try:
+            suggestions = extract_itinerary_metadata(
+                content=str(message.get("content", "")),
+                question=question,
+            )
+        except Exception:
+            traceback.print_exc()
+            suggestions = dict(EMPTY_METADATA)
+
+    log_ai_usage(
+        client=st.session_state.client,
+        usages=usages,
+        conversation_id=message.get("conversation_id"),
+    )
+
+    st.session_state[cache_key] = suggestions
+    return suggestions
+
+
 @st.dialog(
     "Publicar versão atual",
     icon=":material/group:",
@@ -770,39 +987,66 @@ def show_publish_itinerary_dialog(
     default_destination = _destination_from_title(
         str(conversation["title"])
     )
+    suggested = _get_publication_suggestions(
+        client=client,
+        conversation_id=conversation["id"],
+        message=message,
+    )
+
+    # LGPD: roteiros com dados de clientes não podem ser publicados.
+    content_check = _get_client_data_check(message)
+    publication_blocked = content_check.found is not False
+
+    if content_check.found is True:
+        _show_client_data_block(content_check.items)
+    elif content_check.found is None:
+        st.warning(
+            "Não foi possível verificar se o roteiro contém dados de "
+            "clientes. Por segurança, a publicação está bloqueada; feche "
+            "e tente novamente em instantes."
+        )
 
     with st.form(
         f"publish_itinerary_form_{message['id']}"
     ):
         title = st.text_input(
             "Título do roteiro",
-            value=str(conversation["title"]),
+            value=suggested["titulo"] or str(conversation["title"]),
             max_chars=120,
         )
         destination = st.text_input(
             "Destino",
-            value=default_destination,
+            value=suggested["destino"] or default_destination,
             max_chars=100,
             placeholder="Ex.: Mumbai",
         )
         duration_text = st.text_input(
             "Duração em dias (opcional)",
+            value=(
+                str(suggested["duracao_dias"])
+                if suggested["duracao_dias"]
+                else ""
+            ),
             placeholder="Ex.: 7",
         )
         traveler_profile = st.text_input(
             "Perfil dos viajantes (opcional)",
+            value=suggested["perfil_viajantes"],
             placeholder="Ex.: Casal",
         )
         interests_text = st.text_input(
             "Interesses (opcional)",
+            value=", ".join(suggested["interesses"]),
             placeholder="Ex.: Cultura, gastronomia",
         )
         budget_range = st.text_input(
             "Faixa de orçamento (opcional)",
+            value=suggested["faixa_orcamento"],
             placeholder="Ex.: Alto padrão",
         )
         keywords_text = st.text_input(
             "Outras palavras-chave (opcional)",
+            value=", ".join(suggested["palavras_chave"]),
             placeholder="Ex.: Índia, roteiro cultural",
         )
 
@@ -813,6 +1057,7 @@ def show_publish_itinerary_dialog(
                 "Publicar",
                 type="primary",
                 use_container_width=True,
+                disabled=publication_blocked,
             )
 
         with cancel_column:
@@ -825,7 +1070,44 @@ def show_publish_itinerary_dialog(
         st.session_state.message_to_publish = None
         st.rerun()
 
-    if not publish_submitted:
+    if not publish_submitted or publication_blocked:
+        return
+
+    # A consultora pode ter digitado dados de clientes nos campos da ficha.
+    form_text = "\n".join(
+        [
+            title,
+            destination,
+            traveler_profile,
+            interests_text,
+            budget_range,
+            keywords_text,
+        ]
+    )
+
+    from services.personal_data_check import find_client_data
+
+    with (
+        collect_usage() as usages,
+        st.spinner("Verificando dados pessoais..."),
+    ):
+        form_check = find_client_data(form_text)
+
+    log_ai_usage(
+        client=client,
+        usages=usages,
+        conversation_id=conversation.get("id"),
+    )
+
+    if form_check.found is True:
+        _show_client_data_block(form_check.items)
+        return
+
+    if form_check.found is None:
+        st.warning(
+            "Não foi possível verificar os campos da ficha. Por segurança, "
+            "a publicação não foi feita; tente novamente em instantes."
+        )
         return
 
     duration_days = None
@@ -1041,7 +1323,7 @@ def create_title_from_message(
     else:
         summarized_title = "Nova conversa"
 
-    maximum_length = 48
+    maximum_length = 40
 
     if len(summarized_title) <= maximum_length:
         return summarized_title
@@ -1054,44 +1336,22 @@ def create_title_from_message(
 
 
 def show_empty_conversation(flower_uri: str) -> None:
+    """Tela de boas-vindas da conversa vazia (os modelos de prompt aparecem
+    logo abaixo, como botões arredondados)."""
+    logo_uri = file_to_data_uri(
+        LOGO_FILE,
+        "image/png",
+    )
+
     st.html(
         f"""
-        <div style="
-            min-height: 360px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            padding: 48px 24px;
-        ">
-            <img
-                src="{flower_uri}"
-                alt=""
-                style="
-                    width: 74px;
-                    height: auto;
-                    margin-bottom: 22px;
-                "
-            >
-            <h2 style="
-                margin: 0 0 12px;
-                font-family: Georgia, 'Times New Roman', serif;
-                font-size: 32px;
-                font-weight: 400;
-                color: #333333;
-            ">
-                Inicie uma nova conversa
-            </h2>
-            <p style="
-                max-width: 520px;
-                margin: 0;
-                color: #9B9B9C;
-                font-size: 16px;
-                line-height: 1.6;
-            ">
-                Envie uma mensagem para pesquisar, organizar
-                informações ou criar uma sugestão de roteiro.
+        <div class="welcome">
+            <img class="welcome-logo" src="{logo_uri}" alt="Latitudes">
+            <div class="welcome-kicker">LATITUDES · ASSISTENTE IA</div>
+            <h2 class="welcome-title">Olá, eu sou <strong>ÁGORA</strong></h2>
+            <p class="welcome-text">
+                Sua assistente para o dia a dia: pesquisas, informações
+                organizadas e sugestões de roteiro. Como posso ajudar?
             </p>
         </div>
         """,
@@ -1134,6 +1394,124 @@ def display_message_attachments(
             )
 
 
+GENERATED_FILE_LABELS = {
+    "application/pdf": ("PDF", ":material/picture_as_pdf:"),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ): ("Documento Word", ":material/description:"),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet"
+    ): ("Planilha Excel", ":material/table_view:"),
+    "text/csv": ("Arquivo CSV", ":material/csv:"),
+}
+
+
+def display_generated_files(
+    client,
+    attachments: list[dict] | None,
+) -> None:
+    for attachment in attachments or []:
+        name = str(attachment.get("name", "arquivo"))
+        mime_type = str(attachment.get("mime_type", ""))
+        label, icon = GENERATED_FILE_LABELS.get(
+            mime_type,
+            ("Arquivo", ":material/draft:"),
+        )
+        size_kb = max(1, round(int(attachment.get("size") or 0) / 1024))
+
+        # O arquivo só é baixado do Storage quando a pessoa clica.
+        def load_file(attachment=attachment) -> bytes:
+            return download_chat_attachment(
+                client=client,
+                attachment=attachment,
+            )
+
+        with st.container(border=True):
+            info_column, button_column = st.columns(
+                [3, 1],
+                vertical_alignment="center",
+            )
+
+            with info_column:
+                st.markdown(f"**{escape_dollar_signs(name)}**")
+                st.caption(f"{label} · {size_kb} KB · Identidade Latitudes")
+
+            with button_column:
+                st.download_button(
+                    "Baixar",
+                    data=load_file,
+                    file_name=name,
+                    mime=mime_type or "application/octet-stream",
+                    icon=icon,
+                    key=f"generated_{attachment.get('path', name)}",
+                    on_click="ignore",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+
+def display_image_gallery(
+    sources: list[dict] | None,
+) -> None:
+    images = [
+        source
+        for source in sources or []
+        if isinstance(source, dict)
+        and source.get("type") == "image"
+        and source.get("url")
+    ]
+
+    if not images:
+        return
+
+    columns = st.columns(3)
+
+    for index, image in enumerate(images):
+        url = str(image["url"])
+        host = urlparse(url).netloc.removeprefix("www.")
+
+        with columns[index % 3]:
+            # A imagem vem direto do site de origem; clicar abre o original.
+            st.image(
+                url,
+                width="stretch",
+                link=url,
+            )
+            st.caption(f"Fonte: {host}")
+
+    st.caption(
+        "Fotos encontradas na internet, para referência interna. "
+        "Verifique os direitos de uso antes de enviar a clientes."
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def _initial_avatar(initial: str) -> Image.Image:
+    """Círculo oliva com a inicial de quem está logado (avatar do balão)."""
+    from PIL import ImageDraw, ImageFont
+
+    size = 96
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((0, 0, size - 1, size - 1), fill=(148, 130, 93, 255))
+    font = ImageFont.load_default(size=46)
+    draw.text(
+        (size / 2, size / 2),
+        initial,
+        fill=(255, 255, 255, 255),
+        font=font,
+        anchor="mm",
+    )
+    return image
+
+
+def _user_avatar() -> Image.Image:
+    email = str(st.session_state.get("user_email") or "?").strip()
+    return _initial_avatar((email[:1] or "?").upper())
+
+
 def display_user_message(
     content: str,
     client=None,
@@ -1141,9 +1519,9 @@ def display_user_message(
 ) -> None:
     with st.chat_message(
         "user",
-        avatar="👤",
+        avatar=_user_avatar(),
     ):
-        st.markdown(content)
+        st.markdown(escape_dollar_signs(content))
 
         if client is not None:
             display_message_attachments(
@@ -1165,20 +1543,71 @@ def parse_chat_submission(submission) -> tuple[str, list]:
     )
 
 
+CHAT_INPUT_KEY = "main_chat_input"
+
+
+def restore_chat_input(text: str) -> None:
+    """Devolve um texto ao campo de mensagem na próxima atualização da tela
+    (ex.: mensagem cancelada para a pessoa completar e reenviar)."""
+    st.session_state.chat_input_prefill = text
+
+
+def flash(message: str, kind: str = "warning") -> None:
+    """Aviso exibido uma vez, depois do próximo st.rerun()."""
+    st.session_state.flash_message = (kind, message)
+
+
+def show_flash_message() -> None:
+    item = st.session_state.pop("flash_message", None)
+
+    if item:
+        kind, message = item
+        getattr(st, kind)(message)
+
+
 def show_chat_input(
     placeholder: str,
     *,
     disabled: bool = False,
+    running_reply_id: str | None = None,
 ):
-    return st.chat_input(
-        placeholder,
-        key="main_chat_input",
-        accept_file="multiple",
-        file_type=CHAT_FILE_TYPES,
-        max_upload_size=10,
-        submit_mode="stop",
-        disabled=disabled,
-    )
+    """Campo de mensagem fixo no rodapé, com o botão Parar ao lado.
+
+    Enquanto a IA responde (running_reply_id), o envio fica bloqueado e o
+    Parar aparece; no resto do tempo, só o envio funciona.
+    """
+    prefill = st.session_state.pop("chat_input_prefill", None)
+
+    if prefill:
+        # O valor precisa ser definido antes de o campo ser desenhado.
+        st.session_state[CHAT_INPUT_KEY] = prefill
+
+    with st.bottom:
+        input_column, stop_column = st.columns(
+            [16, 1],
+            vertical_alignment="center",
+        )
+
+        with input_column:
+            submission = st.chat_input(
+                placeholder,
+                key=CHAT_INPUT_KEY,
+                accept_file="multiple",
+                file_type=CHAT_FILE_TYPES,
+                max_upload_size=10,
+                # Bloqueia só enquanto a mensagem é gravada (execução curta).
+                submit_mode="disable",
+                disabled=disabled or running_reply_id is not None,
+            )
+
+        if running_reply_id is not None:
+            with stop_column:
+                running_turn_controls(
+                    client=st.session_state.client,
+                    reply_id=running_reply_id,
+                )
+
+    return submission
 
 
 def _is_itinerary_request(content: str) -> bool:
@@ -1208,24 +1637,29 @@ def create_shared_itinerary_offer(
     client,
     conversation_id: str,
     prompt: str,
-    attachments: list[dict] | None = None,
+    reply_id: str,
+    new_conversation: bool = False,
 ) -> bool:
+    """Se houver roteiro compatível na memória coletiva, preenche a resposta
+    reservada do turno com a oferta (sem chamar a IA)."""
     if not _is_itinerary_request(prompt):
         return False
 
     try:
-        conversation_messages = list_messages(
-            client=client,
-            conversation_id=conversation_id,
-        )
+        # Numa conversa recém-criada ainda não houve oferta a conferir.
+        if not new_conversation:
+            conversation_messages = list_messages(
+                client=client,
+                conversation_id=conversation_id,
+            )
 
-        already_offered = any(
-            _get_shared_offer(message) is not None
-            for message in conversation_messages
-        )
+            already_offered = any(
+                _get_shared_offer(message) is not None
+                for message in conversation_messages
+            )
 
-        if already_offered:
-            return False
+            if already_offered:
+                return False
 
         matches = find_shared_itineraries_for_message(
             client=client,
@@ -1267,17 +1701,9 @@ def create_shared_itinerary_offer(
         "duration_days": duration_days,
     }
 
-    add_message(
+    complete_reply(
         client=client,
-        conversation_id=conversation_id,
-        role="user",
-        content=prompt,
-        attachments=attachments or [],
-    )
-    add_message(
-        client=client,
-        conversation_id=conversation_id,
-        role="assistant",
+        reply_id=reply_id,
         content=offer_content,
         sources=[offer_source],
     )
@@ -1313,151 +1739,213 @@ def _build_shared_itinerary_context(itinerary: dict) -> str:
     )
 
 
-def stream_assistant_response(
+# Intervalo para conferir se a resposta em segundo plano terminou. A checagem
+# é feita na memória do servidor (instantânea); o banco só é consultado
+# quando a tarefa não está neste processo (ex.: servidor reiniciado).
+RUNNING_TURN_POLL_SECONDS = 1
+
+PREPARING_RESPONSE_HTML = """
+<style>
+@keyframes latitudes-cursor-blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+}
+
+.latitudes-streaming-status {
+    color: #9B9B9C;
+    font-size: 15px;
+}
+
+.latitudes-streaming-cursor {
+    display: inline-block;
+    margin-left: 3px;
+    color: #F6862F;
+    animation: latitudes-cursor-blink 0.9s infinite;
+}
+</style>
+
+<div class="latitudes-streaming-status">
+    Preparando a resposta
+    <span class="latitudes-streaming-cursor">▌</span>
+</div>
+"""
+
+
+@st.fragment(run_every=RUNNING_TURN_POLL_SECONDS)
+def running_turn_controls(
+    client,
+    reply_id: str,
+) -> None:
+    """Botão Parar e acompanhamento da resposta em segundo plano (sem custo
+    de IA). Quando a resposta termina ou é interrompida, atualiza a tela.
+
+    Os dois ficam no MESMO fragmento: o Streamlit junta um clique de fora do
+    fragmento com a atualização automática dele, e o clique se perdia.
+    """
+    if st.button(
+        "",
+        icon=":material/stop_circle:",
+        key="stop_turn_button",
+        help="Parar a resposta",
+    ):
+        log_event(f"[UI] clique_parar reply={str(reply_id)[:8]}")
+
+        try:
+            cancel_turn_job(
+                client=client,
+                reply_id=reply_id,
+            )
+        except Exception:
+            traceback.print_exc()
+
+        st.rerun(scope="app")
+
+    if not is_turn_job_running(reply_id):
+        try:
+            reply = get_message(
+                client=client,
+                message_id=reply_id,
+            )
+        except Exception:
+            reply = None
+
+        if reply is None or not is_turn_active(reply):
+            st.rerun(scope="app")
+
+
+SEND_FAILED_MESSAGE = (
+    "Não foi possível enviar sua mensagem. Verifique a conexão e tente "
+    "novamente; o texto voltou para o campo de mensagem."
+)
+TURN_IN_PROGRESS_MESSAGE = (
+    "Aguarde a resposta anterior terminar antes de enviar outra mensagem."
+)
+
+
+def save_turn(
+    client,
+    conversation_id: str,
+    prompt: str,
+    attachments: list[dict],
+    new_conversation: bool = False,
+) -> dict | None:
+    """Grava a pergunta e reserva a resposta antes de qualquer outra etapa.
+
+    Retorna o turno ou None (com aviso e o texto devolvido ao campo).
+    """
+    started = time.perf_counter()
+
+    try:
+        turn = start_turn(
+            client=client,
+            conversation_id=conversation_id,
+            content=prompt,
+            attachments=attachments,
+            new_conversation=new_conversation,
+        )
+        log_duration("[UI] turno_salvo", started)
+        return turn
+    except TurnInProgressError:
+        flash(TURN_IN_PROGRESS_MESSAGE)
+    except Exception:
+        traceback.print_exc()
+        flash(SEND_FAILED_MESSAGE, kind="error")
+
+    restore_chat_input(prompt)
+    return None
+
+
+def answer_turn(
     client,
     user_id: str,
     conversation_id: str,
     prompt: str,
-    attachments: list[dict] | None = None,
-) -> bool:
+    turn: dict,
+    new_conversation: bool = False,
+) -> None:
+    """Depois de salvo o turno: oferta da memória coletiva ou resposta da IA.
+
+    A IA roda em segundo plano (services/turn_worker.py); a tela atualiza na
+    hora e acompanha o turno pelo banco, então trocar de conversa ou clicar
+    em outro lugar não interrompe nem mistura a resposta.
+    """
+    reply_id = turn["reply"]["id"]
+    started = time.perf_counter()
+
+    # Aparece logo abaixo da pergunta, sem esperar a próxima atualização.
     with st.chat_message(
         "assistant",
-        avatar=page_icon,
+        avatar="/app/static/agora-avatar-v2.png",
     ):
-        status_placeholder = st.empty()
-        status_placeholder.html(
-            """
-            <style>
-            @keyframes latitudes-cursor-blink {
-                0%, 49% { opacity: 1; }
-                50%, 100% { opacity: 0; }
-            }
+        st.html(PREPARING_RESPONSE_HTML)
 
-            .latitudes-streaming-status {
-                color: #9B9B9C;
-                font-size: 15px;
-            }
+    try:
+        offer_created = create_shared_itinerary_offer(
+            client=client,
+            conversation_id=conversation_id,
+            prompt=prompt,
+            reply_id=reply_id,
+            new_conversation=new_conversation,
+        )
+    except Exception:
+        traceback.print_exc()
+        offer_created = False
 
-            .latitudes-streaming-cursor {
-                display: inline-block;
-                margin-left: 3px;
-                color: #F6862F;
-                animation: latitudes-cursor-blink 0.9s infinite;
-            }
-            </style>
+    log_duration(
+        "[UI] oferta_memoria_coletiva",
+        started,
+        details=f"encontrada={offer_created}",
+    )
 
-            <div class="latitudes-streaming-status">
-                Preparando a resposta
-                <span class="latitudes-streaming-cursor">▌</span>
-            </div>
-            """,
+    if not offer_created:
+        start_turn_job(
+            client=client,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            reply_id=reply_id,
         )
 
-        async def visible_response_stream():
-            first_chunk = True
-            response_queue: asyncio.Queue = asyncio.Queue()
+    st.session_state.scroll_to_bottom = True
+    st.rerun()
 
-            async def produce_response() -> None:
-                try:
-                    async for chunk in process_message_stream(
-                        client=client,
-                        user_id=user_id,
-                        conversation_id=conversation_id,
-                        content=prompt,
-                        attachments=attachments,
-                    ):
-                        await response_queue.put(("chunk", chunk))
-                except asyncio.CancelledError:
-                    raise
-                except BaseException as error:
-                    await response_queue.put(("error", error))
-                else:
-                    await response_queue.put(("done", None))
 
-            producer = asyncio.create_task(produce_response())
+def answer_shared_choice(
+    client,
+    user_id: str,
+    conversation_id: str,
+    choice_prompt: str,
+) -> None:
+    """Escolha na memória coletiva (continuar ou criar do zero): grava o
+    turno e só depois chama a IA."""
+    turn = save_turn(
+        client=client,
+        conversation_id=conversation_id,
+        prompt=choice_prompt,
+        attachments=[],
+    )
 
-            try:
-                while True:
-                    try:
-                        event_type, payload = await asyncio.wait_for(
-                            response_queue.get(),
-                            timeout=0.25,
-                        )
-                    except TimeoutError:
-                        # Devolve o controle ao Streamlit enquanto a API ainda
-                        # não enviou o primeiro trecho. Isso torna o botão de
-                        # interrupção responsivo também durante a espera.
-                        yield ""
-                        continue
+    if turn is not None:
+        start_turn_job(
+            client=client,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            reply_id=turn["reply"]["id"],
+        )
 
-                    if event_type == "done":
-                        break
+    st.session_state.scroll_to_bottom = True
+    st.rerun()
 
-                    if event_type == "error":
-                        raise payload
 
-                    if first_chunk:
-                        status_placeholder.empty()
-                        first_chunk = False
-
-                    yield payload
-            finally:
-                if not producer.done():
-                    producer.cancel()
-
-                await asyncio.gather(
-                    producer,
-                    return_exceptions=True,
-                )
-
-        try:
-            st.write_stream(
-                visible_response_stream(),
-                cursor="▌",
-            )
-        except Exception as error:
-            traceback.print_exc()
-            status_placeholder.empty()
-
-            close_pending_response(
-                client=client,
-                conversation_id=conversation_id,
-                content=FAILED_RESPONSE,
-            )
-
-            error_text = str(error).lower()
-
-            if (
-                "429" in error_text
-                or "resource_exhausted" in error_text
-                or "quota exceeded" in error_text
-            ):
-                error_message = (
-                    "O limite de uso da API de IA foi atingido. "
-                    "A conversa foi liberada; tente novamente quando "
-                    "a cota estiver disponível."
-                )
-            elif (
-                "503" in error_text
-                or "high demand" in error_text
-                or "service unavailable" in error_text
-            ):
-                error_message = (
-                    "O serviço de IA está temporariamente sobrecarregado. "
-                    "A conversa foi liberada; tente novamente em instantes."
-                )
-            else:
-                error_message = (
-                    "Não foi possível processar a mensagem. "
-                    "A conversa foi liberada para uma nova tentativa."
-                )
-
-            st.error(
-                error_message
-            )
-            return False
-
-    return True
+def select_conversation(conversation_id: str) -> None:
+    """Abre uma conversa (lista da barra lateral ou resultado da busca)."""
+    st.session_state.selected_conversation_id = conversation_id
+    st.session_state.new_conversation_mode = False
+    st.session_state.conversation_to_delete = None
+    st.session_state.conversation_to_rename = None
+    st.session_state.conversation_visibility_target = None
+    st.session_state.message_to_publish = None
+    st.session_state.scroll_to_bottom = True
+    close_admin_panel()
 
 
 def show_authenticated_area() -> None:
@@ -1582,16 +2070,32 @@ def show_authenticated_area() -> None:
         """,
     )
 
-    try:
-        conversations = list_conversations(
-            client=client,
-            user_id=user_id,
-        )
-    except Exception:
+    started = time.perf_counter()
+    conversations = None
+
+    # Uma nova tentativa automática: falhas de rede pontuais não devem
+    # derrubar a tela.
+    for attempt in range(2):
+        try:
+            conversations = list_conversations(
+                client=client,
+                user_id=user_id,
+            )
+            break
+        except Exception as error:
+            log_duration(
+                "[UI] conversas_falhou",
+                started,
+                details=f"tentativa={attempt + 1} {type(error).__name__}",
+            )
+
+    if conversations is None:
         st.error(
             "Não foi possível carregar suas conversas."
         )
         return
+
+    log_duration("[UI] conversas_carregadas", started)
 
     conversation_ids = {
         conversation["id"]
@@ -1613,7 +2117,7 @@ def show_authenticated_area() -> None:
             st.session_state.selected_conversation_id = None
             st.session_state.new_conversation_mode = True
 
-    sync_selected_conversation_cookie()
+    sync_selected_conversation()
 
     with st.sidebar:
         st.html(
@@ -1648,16 +2152,25 @@ def show_authenticated_area() -> None:
             st.session_state.conversation_to_rename = None
             st.session_state.conversation_visibility_target = None
             st.session_state.message_to_publish = None
+            close_admin_panel()
             st.rerun()
 
-        st.caption("CONVERSAS")
+        searching = show_conversation_search(
+            client=client,
+            on_select=select_conversation,
+        )
 
-        if not conversations:
+        if not searching:
+            st.caption("CONVERSAS")
+
+        if not conversations and not searching:
             st.caption(
                 "Nenhuma conversa criada."
             )
 
-        for conversation in conversations:
+        # Durante a busca, só os resultados aparecem; apagando a busca, a
+        # lista volta.
+        for conversation in [] if searching else conversations:
             conversation_id = conversation["id"]
             is_selected = (
                 conversation_id
@@ -1685,15 +2198,7 @@ def show_authenticated_area() -> None:
                         else "secondary"
                     ),
                 ):
-                    st.session_state.selected_conversation_id = (
-                        conversation_id
-                    )
-                    st.session_state.new_conversation_mode = False
-                    st.session_state.conversation_to_delete = None
-                    st.session_state.conversation_to_rename = None
-                    st.session_state.conversation_visibility_target = None
-                    st.session_state.message_to_publish = None
-                    st.session_state.scroll_to_bottom = True
+                    select_conversation(conversation_id)
                     st.rerun()
 
             with pin_column:
@@ -1809,14 +2314,35 @@ def show_authenticated_area() -> None:
 
         st.divider()
 
-        st.caption("Usuário conectado")
-        st.write(st.session_state.user_email)
+        show_admin_sidebar_button(client)
+
+        user_email = str(st.session_state.user_email or "")
+
+        st.html(
+            f"""
+            <div class="sidebar-user">
+                <span class="sidebar-user-initial">
+                    {escape(user_email[:1].upper() or "?")}
+                </span>
+                <span class="sidebar-user-text">
+                    <span class="sidebar-user-label">USUÁRIO CONECTADO</span>
+                    <span class="sidebar-user-email">{escape(user_email)}</span>
+                </span>
+            </div>
+            """,
+        )
 
         if st.button(
             "Sair",
+            icon=":material/logout:",
+            key="logout_button",
             use_container_width=True,
         ):
             logout()
+
+    if is_admin_panel_open():
+        show_admin_panel(client)
+        return
 
     conversation_to_delete = (
         st.session_state.conversation_to_delete
@@ -1943,7 +2469,12 @@ def show_authenticated_area() -> None:
             """,
         )
 
+        show_flash_message()
         show_empty_conversation(flower_uri)
+        show_template_picker(
+            client=client,
+            on_choose=restore_chat_input,
+        )
 
         submission = show_chat_input("Digite sua mensagem...")
         prompt, uploaded_files = parse_chat_submission(submission)
@@ -1993,16 +2524,37 @@ def show_authenticated_area() -> None:
                     st.error("Não foi possível enviar os arquivos.")
                     return
 
+                # A pergunta é gravada ANTES de qualquer outra etapa: se a
+                # execução cair daqui em diante, ela não se perde.
+                turn = save_turn(
+                    client=client,
+                    conversation_id=new_conversation_id,
+                    prompt=prompt,
+                    attachments=attachments,
+                    new_conversation=True,
+                )
+
+                if turn is None:
+                    # Nada foi salvo: não deixa uma conversa vazia para trás.
+                    try:
+                        delete_conversation(
+                            client=client,
+                            conversation_id=new_conversation_id,
+                        )
+                    except Exception:
+                        traceback.print_exc()
+
+                    st.rerun()
+
                 st.session_state.selected_conversation_id = (
                     new_conversation_id
                 )
                 st.session_state.new_conversation_mode = False
                 st.session_state.scroll_to_bottom = True
 
-                # Persiste a conversa antes de iniciar chamadas externas.
                 # Se o WebSocket cair durante a resposta, o recarregamento
-                # volta para esta conversa e exibe a mensagem pendente.
-                sync_selected_conversation_cookie()
+                # volta para esta conversa e mostra o turno salvo.
+                sync_selected_conversation()
 
                 display_user_message(
                     prompt,
@@ -2010,30 +2562,14 @@ def show_authenticated_area() -> None:
                     attachments=attachments,
                 )
 
-                try:
-                    offer_created = create_shared_itinerary_offer(
-                        client=client,
-                        conversation_id=new_conversation_id,
-                        prompt=prompt,
-                        attachments=attachments,
-                    )
-                except Exception:
-                    traceback.print_exc()
-                    offer_created = False
-
-                if offer_created:
-                    st.rerun()
-
-                response_saved = stream_assistant_response(
+                answer_turn(
                     client=client,
                     user_id=user_id,
                     conversation_id=new_conversation_id,
                     prompt=prompt,
-                    attachments=attachments,
+                    turn=turn,
+                    new_conversation=True,
                 )
-
-                if response_saved:
-                    st.rerun()
 
         return
 
@@ -2058,25 +2594,51 @@ def show_authenticated_area() -> None:
         """,
     )
 
+    show_flash_message()
+
+    started = time.perf_counter()
+
     try:
-        messages = list_messages(
+        all_messages = list_messages(
             client=client,
             conversation_id=selected_id,
         )
-    except Exception:
+        log_duration("[UI] mensagens_carregadas", started)
+    except Exception as error:
+        log_duration(
+            "[UI] mensagens_falhou",
+            started,
+            details=type(error).__name__,
+        )
         st.error(
             "Não foi possível carregar o histórico."
         )
         return
 
+    # Turnos presos em "processando" (página recarregada, conexão caída)
+    # viram erro; turnos cancelados somem da tela.
+    all_messages = recover_stale_turns(
+        client=client,
+        messages=all_messages,
+    )
+    open_turn = find_open_turn(all_messages)
+    messages = visible_messages(all_messages)
+
     if not messages:
         show_empty_conversation(flower_uri)
+
+        if open_turn is None:
+            show_template_picker(
+                client=client,
+                on_choose=restore_chat_input,
+            )
 
     latest_assistant_message = next(
         (
             message
             for message in reversed(messages)
             if message.get("role") == "assistant"
+            and message_status(message) == STATUS_DONE
         ),
         None,
     )
@@ -2093,18 +2655,50 @@ def show_authenticated_area() -> None:
             )
 
         elif role == "assistant":
+            status = message_status(message)
+
             with st.chat_message(
                 "assistant",
-                avatar=page_icon,
+                avatar="/app/static/agora-avatar-v2.png",
             ):
-                st.markdown(content)
+                if status == STATUS_ERROR:
+                    # Mensagem amigável gravada pelo turno; os botões
+                    # Tentar novamente / Cancelar ficam abaixo da conversa.
+                    st.markdown(escape_dollar_signs(content))
+                    continue
 
+                if status != STATUS_DONE:
+                    # Resposta em andamento: o acompanhamento fica junto do
+                    # botão Parar (running_turn_controls), no rodapé.
+                    st.html(PREPARING_RESPONSE_HTML)
+                    continue
+
+                body, sources_footer = split_sources_footer(content)
+                st.markdown(escape_dollar_signs(body))
+
+                display_image_gallery(message.get("sources"))
+
+                generated_files = message.get("attachments") or []
+
+                if generated_files:
+                    display_generated_files(
+                        client=client,
+                        attachments=generated_files,
+                    )
+
+                if sources_footer:
+                    # Fontes no rodapé da mensagem, numa linha só.
+                    st.caption(sources_footer)
+
+                # Só roteiros (organizados por dias) podem ir para a memória
+                # coletiva; a publicação continua manual, pela ficha.
                 can_publish = (
                     selected_conversation.get("visibility") == "public"
                     and latest_assistant_message is not None
                     and message.get("id")
                     == latest_assistant_message.get("id")
                     and _get_shared_offer(message) is None
+                    and looks_like_itinerary(content)
                 )
 
                 if can_publish and st.button(
@@ -2118,6 +2712,51 @@ def show_authenticated_area() -> None:
                         "message_id": message["id"],
                     }
                     st.rerun()
+
+                # Sugestão para a base de conhecimento: só na última
+                # resposta, e não nas que já vieram da base.
+                knowledge_source = next(
+                    (
+                        source
+                        for source in message.get("sources") or []
+                        if isinstance(source, dict)
+                        and source.get("type") == "knowledge_entry"
+                    ),
+                    None,
+                )
+                is_from_knowledge_base = knowledge_source is not None
+
+                if (
+                    knowledge_source is not None
+                    and knowledge_source.get("mode") == "contexto"
+                ):
+                    # (A resposta direta já traz o aviso no próprio texto.)
+                    st.caption(
+                        "Baseada em uma resposta da base de conhecimento, "
+                        "aprovada pelo TI."
+                    )
+
+                if (
+                    latest_assistant_message is not None
+                    and message.get("id") == latest_assistant_message.get("id")
+                    and _get_shared_offer(message) is None
+                    and not is_from_knowledge_base
+                ):
+                    question_message = next(
+                        (
+                            item
+                            for item in all_messages
+                            if str(item.get("id")) == str(message.get("reply_to"))
+                        ),
+                        None,
+                    )
+
+                    if question_message is not None:
+                        show_suggestion_button(
+                            client=client,
+                            message=message,
+                            question=str(question_message.get("content", "")),
+                        )
 
     pending_offer = _get_shared_offer(
         messages[-1] if messages else None
@@ -2189,17 +2828,12 @@ def show_authenticated_area() -> None:
                     "e adaptá-lo ao meu pedido original: "
                     f"{original_request}"
                 )
-                display_user_message(choice_prompt)
-                response_saved = stream_assistant_response(
+                answer_shared_choice(
                     client=client,
                     user_id=user_id,
                     conversation_id=selected_id,
-                    prompt=choice_prompt,
+                    choice_prompt=choice_prompt,
                 )
-
-                if response_saved:
-                    st.session_state.scroll_to_bottom = True
-                    st.rerun()
 
         if start_over_selected:
             try:
@@ -2221,17 +2855,12 @@ def show_authenticated_area() -> None:
                     "Prefiro criar um roteiro do zero. Considere meu pedido "
                     f"original: {original_request}"
                 )
-                display_user_message(choice_prompt)
-                response_saved = stream_assistant_response(
+                answer_shared_choice(
                     client=client,
                     user_id=user_id,
                     conversation_id=selected_id,
-                    prompt=choice_prompt,
+                    choice_prompt=choice_prompt,
                 )
-
-                if response_saved:
-                    st.session_state.scroll_to_bottom = True
-                    st.rerun()
 
     if messages:
         st.html(
@@ -2336,67 +2965,107 @@ def show_authenticated_area() -> None:
         )
         return
 
-    pending_message = (
-        messages[-1]
-        if messages and messages[-1].get("role") == "user"
-        else None
-    )
+    if open_turn is not None:
+        reply = open_turn["reply"]
+        open_user_message = open_turn["user_message"]
 
-    if pending_message is not None:
-        st.html(
-            """
-            <div class="pending-message-notice">
-                <strong>Mensagem aguardando resposta</strong>
-                A conexão foi interrompida antes de a assistente
-                concluir a última solicitação. Tente novamente
-                para continuar esta conversa.
-            </div>
-            """,
-        )
+        if reply is not None and is_turn_active(reply):
+            # A IA está respondendo em segundo plano: envio bloqueado e o
+            # botão Parar ao lado do campo.
+            show_chat_input(
+                "Aguarde a resposta terminar...",
+                running_reply_id=reply["id"],
+            )
+            return
+
+        if reply is None:
+            # Pergunta salva sem resposta reservada (conversas antigas ou
+            # falha ao reservar): pode ser retomada do mesmo jeito.
+            st.html(
+                """
+                <div class="pending-message-notice">
+                    <strong>Mensagem aguardando resposta</strong>
+                    A conexão foi interrompida antes de a assistente
+                    concluir a última solicitação. Tente novamente
+                    ou cancele para editar a mensagem.
+                </div>
+                """,
+            )
 
         retry_column, cancel_column = st.columns(2)
 
         with retry_column:
-            if st.button(
+            retry_clicked = st.button(
                 "Tentar novamente",
                 icon=":material/refresh:",
                 type="primary",
                 use_container_width=True,
-            ):
-                response_saved = stream_assistant_response(
+                key=f"retry_turn_{open_user_message['id']}",
+            )
+
+        with cancel_column:
+            cancel_clicked = st.button(
+                "Cancelar",
+                icon=":material/stop_circle:",
+                use_container_width=True,
+                key=f"cancel_turn_{open_user_message['id']}",
+            )
+
+        if retry_clicked or cancel_clicked:
+            log_event(
+                "[UI] clique_"
+                + ("tentar_novamente" if retry_clicked else "cancelar")
+                + f" pergunta={str(open_user_message['id'])[:8]}"
+            )
+
+            try:
+                # A nova tentativa e o cancelamento usam sempre o MESMO
+                # registro de resposta; só é criado se ainda não existir.
+                reply_id = (
+                    reply["id"]
+                    if reply is not None
+                    else reserve_reply(
+                        client=client,
+                        conversation_id=selected_id,
+                        user_message_id=open_user_message["id"],
+                    )["id"]
+                )
+            except Exception:
+                traceback.print_exc()
+                flash(
+                    "Não foi possível concluir a ação agora. Verifique a "
+                    "conexão e tente novamente.",
+                    kind="error",
+                )
+                st.rerun()
+
+            if retry_clicked:
+                started_job = start_turn_job(
                     client=client,
                     user_id=user_id,
                     conversation_id=selected_id,
-                    prompt=pending_message["content"],
+                    reply_id=reply_id,
                 )
-
-                if response_saved:
-                    st.session_state.scroll_to_bottom = True
-
-                # Em caso de falha, stream_assistant_response também fecha
-                # a pendência; o rerun devolve imediatamente o campo de texto.
-                st.rerun()
-
-        with cancel_column:
-            if st.button(
-                "Cancelar solicitação",
-                icon=":material/stop_circle:",
-                use_container_width=True,
-            ):
-                close_pending_response(
-                    client=client,
-                    conversation_id=selected_id,
-                    content=INTERRUPTED_RESPONSE,
-                )
+                log_event(f"[UI] tentar_novamente iniciou={started_job}")
                 st.session_state.scroll_to_bottom = True
                 st.rerun()
 
-        show_chat_input(
-            "Conclua a mensagem pendente para continuar...",
-            disabled=True,
-        )
+            try:
+                cancel_turn(
+                    client=client,
+                    reply_id=reply_id,
+                )
+            except Exception:
+                traceback.print_exc()
+                flash(
+                    "Não foi possível cancelar agora. Tente novamente.",
+                    kind="error",
+                )
+            else:
+                # O texto volta ao campo para a pessoa completar e reenviar.
+                restore_chat_input(str(open_user_message.get("content", "")))
 
-        return
+            st.rerun()
 
     submission = show_chat_input("Digite sua mensagem...")
     prompt, uploaded_files = parse_chat_submission(submission)
@@ -2413,12 +3082,29 @@ def show_authenticated_area() -> None:
                 uploaded_files=uploaded_files,
             )
         except ValueError as error:
-            st.warning(str(error))
-            return
+            flash(str(error))
+            restore_chat_input(prompt)
+            st.rerun()
         except Exception:
             traceback.print_exc()
-            st.error("Não foi possível enviar os arquivos.")
-            return
+            flash(
+                "Não foi possível enviar os arquivos. O texto voltou para "
+                "o campo de mensagem.",
+                kind="error",
+            )
+            restore_chat_input(prompt)
+            st.rerun()
+
+        # A pergunta é gravada ANTES de exibir ou chamar a IA.
+        turn = save_turn(
+            client=client,
+            conversation_id=selected_id,
+            prompt=prompt,
+            attachments=attachments,
+        )
+
+        if turn is None:
+            st.rerun()
 
         display_user_message(
             prompt,
@@ -2426,40 +3112,44 @@ def show_authenticated_area() -> None:
             attachments=attachments,
         )
 
-        try:
-            offer_created = create_shared_itinerary_offer(
-                client=client,
-                conversation_id=selected_id,
-                prompt=prompt,
-                attachments=attachments,
-            )
-        except Exception:
-            traceback.print_exc()
-            offer_created = False
-
-        if offer_created:
-            st.session_state.scroll_to_bottom = True
-            st.rerun()
-
-        response_saved = stream_assistant_response(
+        answer_turn(
             client=client,
             user_id=user_id,
             conversation_id=selected_id,
             prompt=prompt,
-            attachments=attachments,
+            turn=turn,
         )
 
-        if response_saved:
-            st.session_state.scroll_to_bottom = True
-            st.rerun()
 
+_run_started = time.perf_counter()
 
-load_css()
-initialize_session_state()
-restore_authentication()
+try:
+    load_css()
+    initialize_session_state()
+    # Carrega a IA em segundo plano enquanto a tela (ou o login) já aparece.
+    warm_up()
+    restore_authentication()
 
-if not st.session_state.authenticated:
-    show_login()
-    st.stop()
+    if not st.session_state.authenticated:
+        show_login()
+        st.stop()
 
-show_authenticated_area()
+    # Senha redefinida pelo TI: só a tela de criar senha nova até trocar.
+    if needs_password_change(
+        client=st.session_state.client,
+        user_id=st.session_state.user_id,
+    ):
+        show_password_change_screen(st.session_state.client)
+
+        if st.button(
+            "Sair",
+            type="tertiary",
+            key="forced_password_logout",
+        ):
+            logout()
+
+        st.stop()
+
+    show_authenticated_area()
+finally:
+    log_duration("[UI] execucao_da_tela", _run_started)
