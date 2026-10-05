@@ -1335,44 +1335,22 @@ def create_title_from_message(
 
 
 def show_empty_conversation(flower_uri: str) -> None:
+    """Tela de boas-vindas da conversa vazia (os modelos de prompt aparecem
+    logo abaixo, como botões arredondados)."""
+    logo_uri = file_to_data_uri(
+        LOGO_FILE,
+        "image/png",
+    )
+
     st.html(
         f"""
-        <div style="
-            min-height: 360px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            padding: 48px 24px;
-        ">
-            <img
-                src="{flower_uri}"
-                alt=""
-                style="
-                    width: 74px;
-                    height: auto;
-                    margin-bottom: 22px;
-                "
-            >
-            <h2 style="
-                margin: 0 0 12px;
-                font-family: Georgia, 'Times New Roman', serif;
-                font-size: 32px;
-                font-weight: 400;
-                color: #333333;
-            ">
-                Inicie uma nova conversa
-            </h2>
-            <p style="
-                max-width: 520px;
-                margin: 0;
-                color: #9B9B9C;
-                font-size: 16px;
-                line-height: 1.6;
-            ">
-                Envie uma mensagem para pesquisar, organizar
-                informações ou criar uma sugestão de roteiro.
+        <div class="welcome">
+            <img class="welcome-logo" src="{logo_uri}" alt="Latitudes">
+            <div class="welcome-kicker">LATITUDES · ASSISTENTE IA</div>
+            <h2 class="welcome-title">Olá, eu sou <strong>ÁGORA</strong></h2>
+            <p class="welcome-text">
+                Sua assistente para o dia a dia: pesquisas, informações
+                organizadas e sugestões de roteiro. Como posso ajudar?
             </p>
         </div>
         """,
@@ -1508,6 +1486,31 @@ def display_image_gallery(
     )
 
 
+@st.cache_resource(show_spinner=False)
+def _initial_avatar(initial: str) -> Image.Image:
+    """Círculo oliva com a inicial de quem está logado (avatar do balão)."""
+    from PIL import ImageDraw, ImageFont
+
+    size = 96
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((0, 0, size - 1, size - 1), fill=(148, 130, 93, 255))
+    font = ImageFont.load_default(size=46)
+    draw.text(
+        (size / 2, size / 2),
+        initial,
+        fill=(255, 255, 255, 255),
+        font=font,
+        anchor="mm",
+    )
+    return image
+
+
+def _user_avatar() -> Image.Image:
+    email = str(st.session_state.get("user_email") or "?").strip()
+    return _initial_avatar((email[:1] or "?").upper())
+
+
 def display_user_message(
     content: str,
     client=None,
@@ -1515,7 +1518,7 @@ def display_user_message(
 ) -> None:
     with st.chat_message(
         "user",
-        avatar="👤",
+        avatar=_user_avatar(),
     ):
         st.markdown(escape_dollar_signs(content))
 
@@ -2312,11 +2315,26 @@ def show_authenticated_area() -> None:
 
         show_admin_sidebar_button(client)
 
-        st.caption("Usuário conectado")
-        st.write(st.session_state.user_email)
+        user_email = str(st.session_state.user_email or "")
+
+        st.html(
+            f"""
+            <div class="sidebar-user">
+                <span class="sidebar-user-initial">
+                    {escape(user_email[:1].upper() or "?")}
+                </span>
+                <span class="sidebar-user-text">
+                    <span class="sidebar-user-label">USUÁRIO CONECTADO</span>
+                    <span class="sidebar-user-email">{escape(user_email)}</span>
+                </span>
+            </div>
+            """,
+        )
 
         if st.button(
             "Sair",
+            icon=":material/logout:",
+            key="logout_button",
             use_container_width=True,
         ):
             logout()

@@ -24,8 +24,6 @@ def show_template_picker(
     if not templates:
         return
 
-    st.html('<div class="prompt-templates-title">COMECE POR UM MODELO</div>')
-
     for start in range(0, len(templates), TEMPLATES_PER_ROW):
         row = templates[start:start + TEMPLATES_PER_ROW]
         # Colunas vazias dos lados centralizam linhas com menos modelos.
@@ -39,6 +37,7 @@ def show_template_picker(
                 if st.button(
                     template["title"],
                     key=f"use_template_{template['id']}",
+                    icon=":material/auto_awesome:",
                     help=template.get("description") or None,
                     use_container_width=True,
                 ):
