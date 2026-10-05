@@ -725,3 +725,108 @@ button[kind="primary"] {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------
+   Celular (até 640px). O computador não muda.
+   ------------------------------------------------------------------ */
+
+@media (max-width: 640px) {
+    [data-testid="stMainBlockContainer"] {
+        padding: 3.5rem 0.75rem 6rem !important;
+    }
+
+    /* Login: foto vira uma faixa no topo e o formulário ocupa a largura. */
+    [data-testid="stHorizontalBlock"]:has(.login-visual) {
+        flex-direction: column !important;
+        min-height: 0;
+    }
+
+    [data-testid="stHorizontalBlock"]:has(.login-visual)
+    > [data-testid="stColumn"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    [data-testid="stHorizontalBlock"]:has(.login-visual)
+    > [data-testid="stColumn"]:last-child {
+        padding: 0 22px 8px;
+    }
+
+    .login-visual {
+        min-height: 190px !important;
+    }
+
+    .login-brand {
+        top: 34px !important;
+    }
+
+    .login-heading {
+        margin-top: 26px !important;
+    }
+
+    .login-heading h1 {
+        font-size: 30px !important;
+    }
+
+    .login-heading p {
+        margin-bottom: 20px;
+    }
+
+    .login-footer {
+        margin-top: 34px !important;
+    }
+
+    /* Cabeçalho da conversa */
+    .chat-header h1 {
+        font-size: 24px;
+    }
+
+    .chat-header p {
+        font-size: 14px;
+    }
+
+    /* Balões ocupam quase toda a largura. */
+    [data-testid="stChatMessageContent"] {
+        max-width: calc(100% - 44px);
+        padding: 12px 14px;
+    }
+
+    [aria-label="Chat message from user"] {
+        max-width: 86%;
+    }
+
+    /* Boas-vindas */
+    .welcome {
+        padding: 20px 8px 14px;
+    }
+
+    .welcome-logo {
+        width: 120px;
+    }
+
+    .welcome-title {
+        font-size: 22px;
+        letter-spacing: 0.06em;
+    }
+
+    .welcome-text {
+        font-size: 15px;
+    }
+
+    /* Modelos: um por linha, sem as colunas vazias de centralização. */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-use_template_"]) {
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-use_template_"])
+    > [data-testid="stColumn"] {
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
+
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-use_template_"])
+    > [data-testid="stColumn"]:not(:has([class*="st-key-use_template_"])) {
+        display: none !important;
+    }
+}

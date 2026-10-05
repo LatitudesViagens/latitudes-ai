@@ -143,7 +143,8 @@ st.set_page_config(
     page_title="ÁGORA | Latitudes AI",
     page_icon=page_icon,
     layout="wide",
-    initial_sidebar_state="expanded",
+    # "auto": aberta no computador, fechada no celular (abre pelo menu).
+    initial_sidebar_state="auto",
 )
 
 
