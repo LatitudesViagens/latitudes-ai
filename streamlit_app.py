@@ -39,6 +39,7 @@ from admin.painel import (
 from admin.base_conhecimento import show_suggestion_button
 from admin.senhas import needs_password_change, show_password_change_screen
 from ui.busca import show_conversation_search
+from ui.cookies import read_encrypted_cookie
 from ui.modelos_prompt import show_template_picker
 from database.ai_usage import log_ai_usage
 from database.client import get_supabase_client
@@ -178,6 +179,9 @@ class SessionCookieManager:
         return None
 
 
+COOKIE_PREFIX = "latitudes-ai/"
+COOKIE_PASSWORD: str | None = None
+
 if IS_VERCEL:
     cookies = SessionCookieManager()
 else:
@@ -189,13 +193,14 @@ else:
         )
         st.stop()
 
+    # O componente leva ~3 s para entregar os cookies (janela escondida no
+    # navegador + nova execução da tela). A tela NÃO espera por ele: o login
+    # é lido da conexão (ui/cookies.py) e o componente só grava cookies, a
+    # partir do momento em que fica pronto.
     cookies = EncryptedCookieManager(
-        prefix="latitudes-ai/",
+        prefix=COOKIE_PREFIX,
         password=COOKIE_PASSWORD,
     )
-
-    if not cookies.ready():
-        st.stop()
 
 AUTH_COOKIE_KEY = "auth_session"
 SELECTED_CONVERSATION_COOKIE_KEY = "selected_conversation_id"
@@ -340,7 +345,48 @@ def flush_cookie_changes() -> None:
     st.session_state.cookies_save_pending = False
 
 
+def read_stored_session() -> str | None:
+    """Login guardado no cookie (criptografado).
+
+    Com o componente pronto, ele é a fonte certa. Antes disso, lê os cookies
+    que vieram com a conexão. Depois de "Sair", a conexão ainda traz o cookie
+    antigo, por isso essa leitura é ignorada até a página ser recarregada.
+    """
+    if cookies.ready():
+        return cookies.get(AUTH_COOKIE_KEY)
+
+    if not COOKIE_PASSWORD or st.session_state.get("ignore_request_cookies"):
+        return None
+
+    return read_encrypted_cookie(
+        name=AUTH_COOKIE_KEY,
+        prefix=COOKIE_PREFIX,
+        password=COOKIE_PASSWORD,
+    )
+
+
+def apply_pending_cookie_changes() -> None:
+    """Grava o que ficou esperando o componente de cookies ficar pronto."""
+    if not cookies.ready():
+        return
+
+    if st.session_state.pop("pending_cookie_clear", False):
+        clear_persistent_authentication()
+
+    pending_session = st.session_state.pop("pending_auth_cookie", None)
+
+    if pending_session:
+        cookies[AUTH_COOKIE_KEY] = pending_session
+        mark_cookies_for_save()
+        flush_cookie_changes()
+
+
 def clear_persistent_authentication() -> None:
+    if not cookies.ready():
+        st.session_state.pop("pending_auth_cookie", None)
+        st.session_state.pending_cookie_clear = True
+        return
+
     cookies_changed = False
 
     for key in (
@@ -373,6 +419,11 @@ def persist_authentication(
         "refresh_token": session.refresh_token,
     }
 
+    if not cookies.ready():
+        # Grava quando o componente ficar pronto (apply_pending_cookie_changes).
+        st.session_state.pending_auth_cookie = json.dumps(session_data)
+        return
+
     cookies[AUTH_COOKIE_KEY] = json.dumps(session_data)
     mark_cookies_for_save()
 
@@ -384,7 +435,7 @@ def restore_authentication() -> None:
     if st.session_state.authenticated:
         return
 
-    stored_session = cookies.get(AUTH_COOKIE_KEY)
+    stored_session = read_stored_session()
 
     if not stored_session:
         return
@@ -618,7 +669,14 @@ def logout() -> None:
         except Exception:
             pass
 
+    pending_clear = st.session_state.get("pending_cookie_clear", False)
     st.session_state.clear()
+    # A conexão ainda traz o cookie de login antigo: não reaproveitar.
+    st.session_state.ignore_request_cookies = True
+
+    if pending_clear:
+        st.session_state.pending_cookie_clear = True
+
     st.rerun()
 
 
@@ -3126,6 +3184,7 @@ _run_started = time.perf_counter()
 try:
     load_css()
     initialize_session_state()
+    apply_pending_cookie_changes()
     # Carrega a IA em segundo plano enquanto a tela (ou o login) já aparece.
     warm_up()
     restore_authentication()
