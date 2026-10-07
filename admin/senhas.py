@@ -32,6 +32,18 @@ _UNAMBIGUOUS_DIGITS = "23456789"
 _SYMBOLS = "#@!-"
 
 TEMPORARY_PASSWORD_STATE_KEY = "admin_temporary_password"
+
+
+def show_temporary_password(
+    message: str,
+    password: str,
+) -> None:
+    """Mostra a senha temporária em destaque, com botão de copiar (aparece
+    uma única vez)."""
+    with st.container(border=True, key="temporary_password_box"):
+        st.success(message)
+        st.markdown("**Senha temporária** (clique no ícone à direita para copiar):")
+        st.code(password, language=None)
 PASSWORD_CHECK_STATE_KEY = "password_change_checked"
 
 
@@ -53,7 +65,7 @@ def generate_temporary_password() -> str:
     return "".join(characters)
 
 
-def _format_date(value: str) -> str:
+def format_date(value: str) -> str:
     try:
         moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
@@ -81,12 +93,14 @@ def show_passwords_tab(client: Client) -> None:
 
     if created:
         email, password = created
-        st.success(
-            f"Senha temporária de **{email}** definida. Copie e repasse à "
-            "pessoa: ela aparece só agora. No próximo acesso, a pessoa vai "
-            "criar uma senha nova."
+        show_temporary_password(
+            message=(
+                f"Senha temporária de **{email}** definida. Copie e repasse à "
+                "pessoa: ela aparece só agora. No próximo acesso, a pessoa vai "
+                "criar uma senha nova."
+            ),
+            password=password,
         )
-        st.code(password, language=None)
 
     st.subheader("Definir senha temporária")
     st.caption(
@@ -180,7 +194,7 @@ def show_passwords_tab(client: Client) -> None:
     st.dataframe(
         [
             {
-                "Quando": _format_date(reset["created_at"]),
+                "Quando": format_date(reset["created_at"]),
                 "Usuário": emails.get(str(reset["target_user_id"]), "—"),
                 "Feito por": emails.get(str(reset["reset_by"]), "—"),
             }

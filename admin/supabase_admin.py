@@ -32,6 +32,10 @@ class AdminNotConfiguredError(RuntimeError):
     """SUPABASE_SERVICE_ROLE_KEY não foi configurada no servidor."""
 
 
+class EmailAlreadyRegisteredError(ValueError):
+    """Já existe uma conta com esse e-mail."""
+
+
 def is_configured() -> bool:
     return bool(os.getenv(SERVICE_ROLE_ENV))
 
@@ -102,6 +106,45 @@ def set_temporary_password(
     )
 
 
+def create_user_with_temporary_password(
+    requester: Client,
+    email: str,
+    full_name: str,
+    temporary_password: str,
+) -> str:
+    """Cria uma conta (só TI) já confirmada e SEM enviar e-mail ou convite.
+
+    Retorna o ID da conta. O registro do cadastro e a obrigação de trocar a
+    senha são gravados por quem chamou, com o login do TI.
+    """
+    service = _service_client(requester)
+
+    try:
+        response = service.auth.admin.create_user(
+            {
+                "email": email.strip().lower(),
+                "password": temporary_password,
+                "email_confirm": True,
+                "user_metadata": {"full_name": full_name.strip()},
+            }
+        )
+    except Exception as error:
+        code = str(getattr(error, "code", "") or "")
+        message = str(error).lower()
+
+        if code in {"email_exists", "user_already_exists"} or "already" in message:
+            raise EmailAlreadyRegisteredError(
+                "Já existe uma conta com esse e-mail."
+            ) from error
+
+        raise
+
+    if response is None or response.user is None:
+        raise RuntimeError("O Supabase não devolveu a conta criada.")
+
+    return str(response.user.id)
+
+
 def clear_own_password_requirement(client: Client) -> None:
     """Remove a obrigação de trocar a senha de quem está logado.
 
@@ -121,3 +164,76 @@ def clear_own_password_requirement(client: Client) -> None:
         "user_id",
         str(user.id),
     ).execute()
+
+
+class CannotDeleteSelfError(ValueError):
+    """O TI tentou excluir a própria conta."""
+
+
+ATTACHMENTS_BUCKET = "chat-attachments"
+
+
+def _remove_user_files(
+    service: Client,
+    user_id: str,
+) -> None:
+    """Apaga os anexos e arquivos gerados da pessoa ({user_id}/{conversa}/...).
+    O banco não apaga arquivos do Storage sozinho. Falhas não impedem a
+    exclusão da conta (ficam no log)."""
+    bucket = service.storage.from_(ATTACHMENTS_BUCKET)
+
+    try:
+        folders = bucket.list(str(user_id)) or []
+        paths = []
+
+        for folder in folders:
+            folder_path = f"{user_id}/{folder['name']}"
+            files = bucket.list(folder_path) or []
+            paths.extend(f"{folder_path}/{item['name']}" for item in files)
+
+        for start in range(0, len(paths), 100):
+            bucket.remove(paths[start:start + 100])
+    except Exception as error:
+        print(
+            f"[TI] Falha ao apagar arquivos do usuário: {type(error).__name__}",
+            flush=True,
+        )
+
+
+def delete_user_account(
+    requester: Client,
+    target_user_id: str,
+) -> tuple[str, str | None]:
+    """Exclui uma conta (só TI). Retorna (e-mail, nome) para o registro.
+
+    O banco apaga em cascata as conversas e mensagens da pessoa e preserva
+    roteiros publicados, base de conhecimento, modelos de prompt, gastos e
+    auditoria (migração 011). Os arquivos da pessoa no Storage são apagados
+    aqui.
+    """
+    service = _service_client(requester)
+    requester_user = requester.auth.get_user()
+
+    if (
+        requester_user is not None
+        and requester_user.user is not None
+        and str(requester_user.user.id) == str(target_user_id)
+    ):
+        raise CannotDeleteSelfError("O TI não pode excluir a própria conta.")
+
+    target = service.auth.admin.get_user_by_id(str(target_user_id))
+
+    if target is None or target.user is None:
+        raise RuntimeError("Conta não encontrada.")
+
+    email = target.user.email or str(target_user_id)
+    metadata = target.user.user_metadata or {}
+    full_name = str(metadata.get("full_name") or "").strip() or None
+
+    _remove_user_files(
+        service=service,
+        user_id=str(target_user_id),
+    )
+    service.auth.admin.delete_user(str(target_user_id))
+
+    return email, full_name

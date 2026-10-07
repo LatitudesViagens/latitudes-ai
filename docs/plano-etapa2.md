@@ -7,6 +7,8 @@ Branch `migracao-ferramentas-pagas`. Banco: uma única migração, `database/mig
 - [x] 0. Migração 009 aprovada e aplicada no Supabase (+ papel TI concedido)
 - [x] 1. Tokens e custo em R$ (PTAX) + painel de gastos do TI
 - [x] 2. Painel do administrador: reset de senha sem e-mail + troca obrigatória
+  - [x] 2b. Cadastro de novos usuários pelo TI (nome, e-mail, senha temporária; troca obrigatória no 1º login) — acrescentado em 07/10/2026; migração 010 aprovada; implementado, falta o teste da Isabelle
+  - [x] 2c. Exclusão de usuários pelo TI (07/10/2026): apaga a conta, as conversas e os arquivos da pessoa; preserva roteiros publicados, base de conhecimento, modelos de prompt, gastos e auditoria (migração 011); confirmação digitando o e-mail; o TI não exclui a própria conta; histórico de exclusões. Implementado, falta o teste da Isabelle
 - [x] 3. Base de conhecimento com aprovação (pgvector)
 - [x] 4. Busca de conversas (texto em português, só as próprias)
 - [x] 5. Modelos de prompt (TI cria/edita; usuário escolhe ao começar)
@@ -18,8 +20,8 @@ Regras: um item por vez, parar ao fim de cada um e esperar "ok, próximo". Códi
 ## Decisões gerais
 
 - **Papel TI**: tabela `user_roles` + função `public.is_ti()` no banco. Toda tela/ação de TI checa o papel no servidor (consulta ao banco com o login da pessoa), e as políticas RLS também exigem `is_ti()`: mesmo que a tela falhe, o banco recusa. O papel só é concedido pelo SQL Editor.
-- **Chave service_role**: nova variável `SUPABASE_SERVICE_ROLE_KEY`, lida só em `admin/supabase_admin.py`, usada só para a API admin de senha (item 2). Nunca vai para `st.session_state`, cookies, logs ou para o navegador (o Streamlit roda no servidor). Antes de cada uso, o servidor confere `is_ti()` com o login de quem pediu.
-- **Painel do TI**: botão "Painel do TI" na barra lateral, visível só para TI; a tela fica em `admin/painel.py` (abas: Gastos, Senhas, Base de conhecimento, Modelos de prompt).
+- **Chave service_role**: nova variável `SUPABASE_SERVICE_ROLE_KEY`, lida só em `admin/supabase_admin.py`, usada só para a API admin de senha e de cadastro de usuários (item 2). Nunca vai para `st.session_state`, cookies, logs ou para o navegador (o Streamlit roda no servidor). Antes de cada uso, o servidor confere `is_ti()` com o login de quem pediu.
+- **Painel do TI**: botão "Painel do TI" na barra lateral, visível só para TI; a tela fica em `admin/painel.py` (abas: Gastos, Senhas, Usuários, Base de conhecimento, Modelos de prompt).
 
 ---
 
@@ -42,7 +44,7 @@ Regras: um item por vez, parar ao fim de cada um e esperar "ok, próximo". Códi
 2. Conferir no Supabase (`message_attempts`) os campos `cost_usd`, `cost_brl`, `rate_source = ptax`.
 3. Entrar com usuário comum: o botão do painel não aparece.
 
-## 2. Painel do administrador — senhas
+## 2. Painel do administrador — senhas e cadastro de usuários
 
 **Como funciona**
 - Aba "Senhas": lista de usuários (API admin), botão "Definir senha temporária". O servidor confere `is_ti()`, gera uma senha temporária forte (ou aceita uma digitada), chama `auth.admin.update_user_by_id` com a service_role, grava `password_resets` (quem, para quem, quando) e `password_change_required`.
@@ -59,6 +61,35 @@ Regras: um item por vez, parar ao fim de cada um e esperar "ok, próximo". Códi
 2. Entrar com esse usuário + senha temporária: aparece só a tela de nova senha.
 3. Criar a nova senha, sair e entrar com ela.
 4. Ver o reset no histórico (quem, para quem, quando).
+
+### 2b. Cadastro de novos usuários pelo TI (acrescentado em 07/10/2026)
+
+**Como funciona**
+- Nova aba "Usuários" no painel do TI, com o formulário "Cadastrar usuário": nome, e-mail e senha temporária (gerada automaticamente, como no reset; o TI pode trocar por uma digitada, com as mesmas regras mínimas).
+- O servidor confere `is_ti()` e cria a conta pela API admin do Supabase (`auth.admin.create_user`, service_role, só no servidor) com `email_confirm=True`: a conta já nasce confirmada e **nenhum e-mail ou link de convite é enviado**. O nome vai em `user_metadata.full_name`.
+- A conta criada é marcada em `password_change_required`, então no primeiro login a pessoa cai na mesma tela "Crie sua nova senha" do reset, e quem libera o acesso depois da troca é o servidor (mesmo fluxo do item 2, sem código novo de troca).
+- A senha temporária aparece uma única vez para o TI repassar à pessoa.
+- Cada cadastro é registrado (quem cadastrou, quem foi cadastrado, nome, e-mail e quando) e aparece num histórico na mesma aba.
+- E-mail já cadastrado: mostra "Já existe uma conta com esse e-mail" e não altera a conta existente (para trocar a senha de quem já existe, usar a aba Senhas).
+- Se a conta for criada mas o registro ou a obrigação de troca falharem, o TI vê um aviso para pedir que a pessoa troque a senha ao entrar (mesmo tratamento do reset).
+
+**Banco — migração 010 (proposta; aplicar só após aprovação da Isabelle)**
+- Tabela `user_registrations`: `id`, `user_id` (conta criada, FK `auth.users` com `on delete cascade`), `full_name`, `email`, `created_by` (default `auth.uid()`), `created_at`.
+- RLS: só o TI lê (`is_ti()`) e só o TI insere, com `created_by = auth.uid()`; ninguém altera nem apaga pela interface.
+- `password_change_required` não muda: a coluna `reset_id` é opcional e fica vazia nos cadastros.
+- Alternativa sem migração (não recomendada): guardar "quem cadastrou" em `app_metadata` da conta criada. Funciona, mas mistura auditoria com dados de login e dificulta listar o histórico.
+
+**Arquivos**: novos `admin/usuarios.py` (aba e formulário) e `database/user_registrations.py`; ajustes em `admin/supabase_admin.py` (`create_user_with_temporary_password`), `admin/painel.py` (nova aba) e `admin/senhas.py` (reaproveitar o gerador de senha temporária e a obrigação de troca).
+
+**Pronto quando**: o TI cadastra uma pessoa sem enviar e-mail; ela entra com a senha temporária e é obrigada a criar outra; o cadastro aparece no histórico com quem fez e quando; e-mail repetido é recusado; usuário comum não vê nem consegue chamar nada disso.
+
+**Teste**
+1. Como TI, cadastrar um usuário de teste (nome, e-mail, senha temporária gerada) e copiar a senha.
+2. Conferir no histórico: nome, e-mail, cadastrado por você, data e hora.
+3. Tentar cadastrar o mesmo e-mail de novo: aparece o aviso e nada muda.
+4. Sair e entrar com o usuário novo e a senha temporária: aparece só "Crie sua nova senha".
+5. Criar a senha, sair e entrar com ela: entra direto.
+6. Com um usuário comum: a aba "Usuários" não aparece.
 
 ## 3. Base de conhecimento com aprovação
 

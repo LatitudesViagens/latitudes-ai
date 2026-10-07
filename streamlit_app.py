@@ -308,12 +308,20 @@ def get_flower_data_uri() -> str:
     return f"data:image/png;base64,{encoded_image}"
 
 
+def user_display_name(user) -> str | None:
+    """Nome cadastrado pelo TI (user_metadata.full_name); None se não houver."""
+    metadata = getattr(user, "user_metadata", None) or {}
+    name = str(metadata.get("full_name") or "").strip()
+    return name or None
+
+
 def initialize_session_state() -> None:
     default_values = {
         "authenticated": False,
         "client": None,
         "user_id": None,
         "user_email": None,
+        "user_name": None,
         "auth_view": "login",
         "recovery_email": "",
         "selected_conversation_id": None,
@@ -469,6 +477,7 @@ def restore_authentication() -> None:
         st.session_state.client = client
         st.session_state.user_id = str(user.id)
         st.session_state.user_email = user.email
+        st.session_state.user_name = user_display_name(user)
 
         # Volta para a conversa que estava aberta (guardada no endereço).
         selected_conversation_id = st.query_params.get(
@@ -643,6 +652,7 @@ def show_login() -> None:
                     st.session_state.client = client
                     st.session_state.user_id = str(user.id)
                     st.session_state.user_email = user.email
+                    st.session_state.user_name = user_display_name(user)
 
                     persist_authentication(client)
 
@@ -838,6 +848,16 @@ def show_conversation_visibility_dialog(
         confirm_label = "Tornar privada"
         confirm_icon = ":material/lock:"
     else:
+        if (
+            st.session_state.get("publish_requested_for")
+            == conversation["id"]
+        ):
+            # Aberto pelo botão "Publicar na memória coletiva".
+            st.warning(
+                "Esta conversa está privada. Torne-a pública antes de "
+                "publicar o roteiro na memória coletiva."
+            )
+
         st.write(
             f"Tornar **{conversation['title']}** pública?"
         )
@@ -870,6 +890,7 @@ def show_conversation_visibility_dialog(
 
     if cancelled:
         st.session_state.conversation_visibility_target = None
+        st.session_state.publish_requested_for = None
         st.rerun()
 
     if not confirmed:
@@ -887,6 +908,7 @@ def show_conversation_visibility_dialog(
         )
     else:
         st.session_state.conversation_visibility_target = None
+        st.session_state.publish_requested_for = None
         st.rerun()
 
 
@@ -1566,8 +1588,12 @@ def _initial_avatar(initial: str) -> Image.Image:
 
 
 def _user_avatar() -> Image.Image:
-    email = str(st.session_state.get("user_email") or "?").strip()
-    return _initial_avatar((email[:1] or "?").upper())
+    label = str(
+        st.session_state.get("user_name")
+        or st.session_state.get("user_email")
+        or "?"
+    ).strip()
+    return _initial_avatar((label[:1] or "?").upper())
 
 
 def display_user_message(
@@ -2201,6 +2227,7 @@ def show_authenticated_area() -> None:
 
         if st.button(
             "＋ Nova conversa",
+            key="new_conversation_button",
             use_container_width=True,
             type="primary",
         ):
@@ -2375,15 +2402,23 @@ def show_authenticated_area() -> None:
         show_admin_sidebar_button(client)
 
         user_email = str(st.session_state.user_email or "")
+        # Nome em cima e e-mail embaixo; contas sem nome mostram só o e-mail.
+        user_name = str(st.session_state.get("user_name") or "")
+        name_line = (
+            f'<span class="sidebar-user-name">{escape(user_name)}</span>'
+            if user_name
+            else ""
+        )
 
         st.html(
             f"""
             <div class="sidebar-user">
                 <span class="sidebar-user-initial">
-                    {escape(user_email[:1].upper() or "?")}
+                    {escape((user_name or user_email)[:1].upper() or "?")}
                 </span>
                 <span class="sidebar-user-text">
                     <span class="sidebar-user-label">USUÁRIO CONECTADO</span>
+                    {name_line}
                     <span class="sidebar-user-email">{escape(user_email)}</span>
                 </span>
             </div>
@@ -2750,14 +2785,48 @@ def show_authenticated_area() -> None:
 
                 # Só roteiros (organizados por dias) podem ir para a memória
                 # coletiva; a publicação continua manual, pela ficha.
-                can_publish = (
-                    selected_conversation.get("visibility") == "public"
-                    and latest_assistant_message is not None
+                is_itinerary = looks_like_itinerary(content)
+                is_latest_answer = (
+                    latest_assistant_message is not None
                     and message.get("id")
                     == latest_assistant_message.get("id")
                     and _get_shared_offer(message) is None
-                    and looks_like_itinerary(content)
                 )
+                is_public_conversation = (
+                    selected_conversation.get("visibility") == "public"
+                )
+                can_publish = (
+                    is_latest_answer
+                    and is_itinerary
+                    and is_public_conversation
+                )
+
+                # Roteiro em conversa privada: o caminho para publicar é
+                # abrir o cadeado (mesmo aviso de sempre) e depois "Publicar
+                # versão atual". A regra de privacidade não muda.
+                if (
+                    is_latest_answer
+                    and is_itinerary
+                    and not is_public_conversation
+                    and st.button(
+                        "Publicar na memória coletiva",
+                        icon=":material/group:",
+                        key=f"open_to_publish_{message['id']}",
+                        type="tertiary",
+                        help=(
+                            "Para publicar, a conversa precisa estar com o "
+                            "cadeado aberto. Só a resposta escolhida é "
+                            "compartilhada."
+                        ),
+                    )
+                ):
+                    st.session_state.conversation_visibility_target = (
+                        selected_id
+                    )
+                    st.session_state.publish_requested_for = selected_id
+                    st.session_state.conversation_to_delete = None
+                    st.session_state.conversation_to_rename = None
+                    st.rerun()
 
                 if can_publish and st.button(
                     "Publicar versão atual",
@@ -2794,10 +2863,11 @@ def show_authenticated_area() -> None:
                         "aprovada pelo TI."
                     )
 
+                # Roteiros vão para a memória coletiva (publicar), não para a
+                # base de conhecimento.
                 if (
-                    latest_assistant_message is not None
-                    and message.get("id") == latest_assistant_message.get("id")
-                    and _get_shared_offer(message) is None
+                    is_latest_answer
+                    and not is_itinerary
                     and not is_from_knowledge_base
                 ):
                     question_message = next(
@@ -3202,7 +3272,7 @@ try:
 
         if st.button(
             "Sair",
-            type="tertiary",
+            icon=":material/logout:",
             key="forced_password_logout",
         ):
             logout()

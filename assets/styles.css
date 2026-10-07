@@ -484,7 +484,29 @@ hr {
     -webkit-text-fill-color: var(--latitudes-muted);
 }
 
+[data-testid="stSidebar"] .st-key-conversation_search [data-testid="stTextInputRootElement"]:focus-within {
+    border-color: var(--latitudes-olive);
+    box-shadow: 0 0 0 1px var(--latitudes-olive);
+}
+
+/* Sem a borda interna do campo (ela aparecia como um "(" ao clicar). */
+[data-testid="stSidebar"] .st-key-conversation_search [data-baseweb="input"],
+[data-testid="stSidebar"] .st-key-conversation_search [data-baseweb="base-input"],
+[data-testid="stSidebar"] .st-key-conversation_search input,
+[data-testid="stSidebar"] .st-key-conversation_search input:focus {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: var(--latitudes-white) !important;
+}
+
+/* Lupa centralizada, com respiro dos dois lados. */
 [data-testid="stSidebar"] .st-key-conversation_search [data-testid="stTextInputIcon"] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    padding: 0 6px 0 14px;
     background: var(--latitudes-white);
 }
 
@@ -719,6 +741,20 @@ button[kind="primary"] {
     letter-spacing: 0.08em;
 }
 
+.sidebar-user-name {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Com o nome em cima, o e-mail fica menor e mais claro. */
+.sidebar-user-name + .sidebar-user-email {
+    opacity: 0.75;
+    font-size: 12px;
+}
+
 .sidebar-user-email {
     overflow: hidden;
     font-size: 13px;
@@ -829,4 +865,73 @@ button[kind="primary"] {
     > [data-testid="stColumn"]:not(:has([class*="st-key-use_template_"])) {
         display: none !important;
     }
+}
+
+/* Espaçamentos da barra lateral (07/10). */
+
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
+    row-gap: 6px;
+}
+
+[data-testid="stSidebar"] .st-key-new_conversation_button {
+    margin-bottom: 10px;
+}
+
+[data-testid="stSidebar"] .st-key-conversation_search {
+    margin-bottom: 14px;
+}
+
+[data-testid="stSidebar"] .st-key-open_admin_panel {
+    margin: 6px 0 16px;
+}
+
+.sidebar-user {
+    margin-bottom: 12px;
+}
+
+.sidebar-user-text {
+    gap: 2px;
+}
+
+/* Senha temporária em destaque no painel do TI. */
+
+.st-key-temporary_password_box code {
+    font-size: 22px;
+    letter-spacing: 0.08em;
+}
+
+/* Campos de senha: só o olhinho do Streamlit (o Edge/Chrome punham outro
+   dentro do campo). Vale para login, troca de senha e painel do TI. */
+
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+    display: none !important;
+}
+
+input[type="password"]::-webkit-credentials-auto-fill-button {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* Títulos das conversas sempre alinhados à esquerda (os curtos ficavam no
+   centro do botão). */
+
+[data-testid="stSidebar"]
+[class*=" st-key-conversation_"]:not(.st-key-conversation_search):not([class*="st-key-conversation_menu_"])
+button,
+[data-testid="stSidebar"]
+[class*=" st-key-conversation_"]:not(.st-key-conversation_search):not([class*="st-key-conversation_menu_"])
+button > div,
+[data-testid="stSidebar"] [class*=" st-key-search_result_"] button,
+[data-testid="stSidebar"] [class*=" st-key-search_result_"] button > div {
+    justify-content: flex-start !important;
+    text-align: left !important;
+}
+
+[data-testid="stSidebar"]
+[class*=" st-key-conversation_"]:not(.st-key-conversation_search):not([class*="st-key-conversation_menu_"])
+button [data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] [class*=" st-key-search_result_"] button [data-testid="stMarkdownContainer"] {
+    width: 100%;
+    text-align: left !important;
 }

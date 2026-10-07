@@ -11,6 +11,7 @@ from admin.base_conhecimento import show_knowledge_tab
 from admin.gastos import show_costs_tab
 from admin.modelos_prompt import show_templates_tab
 from admin.senhas import show_passwords_tab
+from admin.usuarios import show_users_tab
 from database.roles import is_ti
 
 PANEL_STATE_KEY = "admin_panel_open"
@@ -73,8 +74,8 @@ def show_admin_panel(client: Client) -> None:
             close_admin_panel()
             st.rerun()
 
-    costs_tab, passwords_tab, knowledge_tab, templates_tab = st.tabs(
-        ["Gastos", "Senhas", "Base de conhecimento", "Modelos de prompt"]
+    costs_tab, passwords_tab, users_tab, knowledge_tab, templates_tab = st.tabs(
+        ["Gastos", "Senhas", "Usuários", "Base de conhecimento", "Modelos de prompt"]
     )
 
     with costs_tab:
@@ -82,6 +83,9 @@ def show_admin_panel(client: Client) -> None:
 
     with passwords_tab:
         show_passwords_tab(client)
+
+    with users_tab:
+        show_users_tab(client)
 
     with knowledge_tab:
         show_knowledge_tab(client)
