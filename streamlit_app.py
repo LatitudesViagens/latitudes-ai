@@ -2859,8 +2859,7 @@ def show_authenticated_area() -> None:
                 ):
                     # (A resposta direta já traz o aviso no próprio texto.)
                     st.caption(
-                        "Baseada em uma resposta da base de conhecimento, "
-                        "aprovada pelo TI."
+                        "Baseada em uma resposta da base de conhecimento."
                     )
 
                 # Roteiros vão para a memória coletiva (publicar), não para a

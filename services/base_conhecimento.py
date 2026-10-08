@@ -35,7 +35,7 @@ MODE_DIRECT = "direta"
 MODE_CONTEXT = "contexto"
 
 DIRECT_ANSWER_NOTE = (
-    "\n\n_Resposta da base de conhecimento da Latitudes, aprovada pelo TI._"
+    "\n\n_Resposta da base de conhecimento da Latitudes._"
 )
 
 

@@ -304,7 +304,7 @@ def show_suggestion_button(
         icon=":material/lightbulb:",
         type="tertiary",
         key=f"kb_suggest_{message_id}",
-        help="O TI revisa antes de a resposta ser usada para outras pessoas.",
+        help="A resposta passa por uma revisão antes de ser usada para outras pessoas.",
     ):
         return
 
