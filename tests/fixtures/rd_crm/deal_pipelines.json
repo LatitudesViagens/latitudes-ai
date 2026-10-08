@@ -1,0 +1,24 @@
+[
+  {
+    "id": "p1",
+    "name": "Vendas | Grupo",
+    "deal_stages": [
+      {
+        "id": "s1",
+        "name": "Proposta enviada",
+        "nickname": "PE",
+        "order": 1
+      }
+    ]
+  },
+  {
+    "id": "p2",
+    "name": "Pós-Venda (Private)",
+    "deal_stages": []
+  },
+  {
+    "id": "p3",
+    "name": "Funil Novo Não Mapeado",
+    "deal_stages": []
+  }
+]

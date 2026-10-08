@@ -1,0 +1,61 @@
+{
+  "_comentario": "Regras de classificação em configuração (docs/regras-integracao-clientes.md). Nomes comparados em maiúsculas e sem acentos.",
+
+  "envision_tipos_por_primeira_palavra": {
+    "GRP": "Grupo",
+    "FIT": "FIT",
+    "BARCO": "Private Expeditions",
+    "TREM": "Private Expeditions",
+    "JATO": "Private Expeditions"
+  },
+
+  "meses": ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"],
+
+  "envision_status_cancelado": ["CANCELADO", "CANCELADA"],
+
+  "envision_campos": {
+    "_comentario": "Campos do registro (ServiceOrder do Swagger). Confirmados no nível 2 (08/10/2026): o registro traz destination.name (destino estruturado, preferido pela regra 4); sem ele, o destino vem do nome do produto (exceto FIT) ou fica 'não informado'. O produto também aparece em name.",
+    "campo_produto": "summary",
+    "campo_destino": "destination.name"
+  },
+
+  "rd_funis": {
+    "Vendas | Grupo": "Grupo",
+    "Pós-Venda (Grupo)": "Grupo",
+    "Vendas | Private": "Private Expeditions",
+    "Pós-Venda (Private)": "Private Expeditions",
+    "Vendas | FIT": "FIT",
+    "Pós-Venda (FIT)": "FIT",
+    "Vendas | Aéreo": "Aéreo",
+    "Pós-Venda (Aéreo)": "Aéreo",
+    "Entrada de leads (newsletter)": "Outros",
+    "Atendimento - Telefone & E-mail": "Outros",
+    "Negociações 2025": "Outros",
+    "Perdas": "Outros",
+    "Perdas | Aéreo": "Aéreo",
+    "Vendas | Incoming": "Outros",
+    "Latitudes Preview 2027": "Outros",
+    "Funil | Novo": "Outros"
+  },
+  "rd_funil_nao_listado": "Outros",
+  "_comentario_rd_funis_ocultos": "Funis que não são negociação de venda e não aparecem no perfil (Isabelle, 08/10/2026): Formulários = quem preencheu o formulário de viajantes.",
+  "rd_funis_ocultos": ["Formulários"],
+
+  "rd_campos": {
+    "_comentario": "IDs de campos personalizados do contato/negociação. Preencher depois do nível 2 do script (mostra só os nomes dos campos). Sem o CPF no RD, o cruzamento com o Envision não é possível.",
+    "contato_cpf_custom_field_id": "655e4f48af0d72000d50799a",
+    "negociacao_destino_custom_field_id": null
+  },
+
+  "aviso_fora_da_lista": "Esse nível de informação não está autorizado pela ÁGORA. Para consultar {dado}, acesse o {sistema}.",
+  "dados_fora_da_lista": {
+    "formulário do viajante": "RD Station CRM",
+    "histórico de saúde": "RD Station CRM",
+    "documentos (CPF, passaporte)": "RD Station CRM",
+    "endereço": "RD Station CRM",
+    "telefone": "RD Station CRM",
+    "data de nascimento": "RD Station CRM",
+    "anotações das negociações": "RD Station CRM",
+    "pagamentos": "Envision"
+  }
+}

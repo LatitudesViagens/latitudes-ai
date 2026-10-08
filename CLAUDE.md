@@ -42,6 +42,7 @@ Camadas: `streamlit_app.py` / `main.py` → `services/chat_service.py` → `serv
 | Base de conhecimento | `services/base_conhecimento.py` decide antes da IA (em `chat_service._find_knowledge_match`): similaridade ≥ `AGORA_BASE_LIMIAR_DIRETO` responde direto (só na 1ª pergunta da conversa), ≥ `AGORA_BASE_LIMIAR_CONTEXTO` entra como contexto interno, abaixo segue normal; falha = fluxo normal. Base vazia não calcula embedding (cache de 60 s, limpo quando o TI muda a base). Embeddings em `services/embeddings.py` (OpenRouter, 768 dimensões; custo estimado pelos tokens). Dados em `database/knowledge_entries.py`; aba do TI e botão "Sugerir para a base" (com trava LGPD) em `admin/base_conhecimento.py`. Nada entra sem aprovação do TI |
 | Busca de conversas | `ui/busca.py` (barra lateral) → `database/search.py` → função SQL `search_conversations` (português, sem acento, RLS) |
 | Modelos de prompt | TI cria/edita em `admin/modelos_prompt.py`; a pessoa escolhe na conversa vazia (`ui/modelos_prompt.py`) e o texto vai para o campo via `restore_chat_input`. Dados em `database/prompt_templates.py` |
+| Integração RD Station CRM + Envision | Regras em `docs/regras-integracao-clientes.md` (não mudar sem a Isabelle); plano em `docs/plano-integracao.md`. Conectores SOMENTE LEITURA em `integracoes/` (`http.py` tem a trava global: só GET, exceto `POST /Records/Query` do Envision, e nada de `/Records` além das 3 leituras); classificações em `integracoes/mapeamentos.json`; contas e filtro de campos permitidos em `services/perfil_cliente.py`; ferramenta `agent_tools/perfil_cliente.py` (anota a consulta em `services/contexto_turno.TURNO_ATUAL`; `chat_service._save_client_lookups` grava em `client_lookups`, migração 012). Testes: `python -m unittest discover -s tests` (só fixtures; nunca chamar as APIs reais no desenvolvimento) |
 | Migrações Supabase | `database/migrations/NNN_*.sql`, aplicadas manualmente no SQL Editor, em ordem; incluem as políticas RLS |
 | UI / assets | `streamlit_app.py` (arquivo único); `assets/` (CSS e imagens embutidas como data URI); `static/` servido em `/app/static/...` via `enableStaticServing` |
 
@@ -74,7 +75,7 @@ docker build -f Dockerfile.vercel -t agora .
 docker run --rm -p 8501:80 --env-file latitudes_agent/.env agora
 ```
 
-Não há suíte de testes, linter ou formatter. Os scripts não versionados `diagnostico_*.py`, `testar_modelo_*.py`, `comparar_modelos.py` e `listar_modelos.py` são verificações manuais e ficam fora do deploy (`.vercelignore`, `.dockerignore`).
+Testes automatizados só das integrações (`tests/`, unittest com fixtures). Não há linter ou formatter. Os scripts não versionados `diagnostico_*.py`, `testar_modelo_*.py`, `comparar_modelos.py` e `listar_modelos.py` são verificações manuais e ficam fora do deploy (`.vercelignore`, `.dockerignore`).
 
 ## Variáveis de ambiente
 
@@ -95,6 +96,9 @@ Carregadas de `latitudes_agent/.env` (não da raiz) por cada módulo via `load_d
 | `SUPABASE_SERVICE_ROLE_KEY` | só no servidor; lida apenas por `admin/supabase_admin.py` (e-mails no painel, reset de senha). Nunca exibir nem copiar |
 | `AGORA_MODELO_EMBEDDING` | opcional; padrão `openrouter/openai/text-embedding-3-small`. Trocar exige recalcular os embeddings aprovados e recalibrar os limiares |
 | `AGORA_BASE_LIMIAR_DIRETO` / `AGORA_BASE_LIMIAR_CONTEXTO` | opcionais; padrão 0,92 / 0,55 |
+| `RD_CRM_API_TOKEN`, `ENVISION_BASE_URL`, `ENVISION_API_KEY` | integrações (`integracoes/config.py`); nunca imprimir. A chave do Envision tem permissão de escrita: as travas de leitura são obrigatórias |
+| `ENVISION_USUARIO`, `ENVISION_SENHA` | perfil da ÁGORA no Envision; login OAuth2 (`/token`) exigido pela API em todas as consultas. Nunca imprimir |
+| `ENVISION_AUTH_FORMATO` | opcional: `senha` (padrão com usuário/senha), `senha_com_chave`, `pura` ou `bearer`, conforme o nível 1 do script de verificação |
 | `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI` | não usadas pelo app desde a troca para o OpenRouter; só pelos scripts de diagnóstico antigos |
 | `COOKIES_PASSWORD` | `streamlit_app.py`; obrigatória fora da Vercel |
 | `VERCEL` | definida pela plataforma; ativa o stub de cookies |

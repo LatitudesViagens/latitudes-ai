@@ -1,0 +1,22 @@
+{
+  "records": [
+    {
+      "id": 900,
+      "type": "Person",
+      "externalId": "12345678909",
+      "associations": [
+        {
+          "recordAssociatedId": 123,
+          "recordType": "ServiceOrder",
+          "type": "association"
+        },
+        {
+          "recordAssociatedId": 77,
+          "recordType": "ServiceBook",
+          "type": "association"
+        }
+      ]
+    }
+  ],
+  "successful": true
+}

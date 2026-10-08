@@ -680,6 +680,33 @@ def _answer_from_knowledge_base(
     return content if completed is not None else None
 
 
+def _save_client_lookups(
+    client: Client,
+    turno,
+) -> None:
+    """Grava em client_lookups (migração 012) as consultas de perfil de
+    cliente anotadas pelas ferramentas neste turno. Nunca lança erro."""
+    if not turno.consultas_cliente:
+        return
+
+    from database.client_lookups import log_client_lookup
+
+    for consulta in turno.consultas_cliente:
+        try:
+            log_client_lookup(
+                client=client,
+                conversation_id=turno.conversation_id,
+                **consulta,
+            )
+        except Exception as error:
+            print(
+                f"[PERFIL] Falha ao registrar a consulta: {type(error).__name__}",
+                flush=True,
+            )
+
+    turno.consultas_cliente.clear()
+
+
 async def run_turn_stream(
     client: Client,
     user_id: str,
@@ -748,6 +775,15 @@ async def run_turn_stream(
         return
 
     from services import agent_runner
+    from services.contexto_turno import TURNO_ATUAL, TurnoAtual
+
+    # Ferramentas que consultam sistemas da Latitudes anotam as consultas
+    # aqui (services/contexto_turno.py); o registro é gravado no fim do turno.
+    turno_atual = TurnoAtual(
+        user_id=str(user_id),
+        conversation_id=str(conversation_id),
+    )
+    TURNO_ATUAL.set(turno_atual)
 
     response_chunks = []
     sources = []
@@ -804,6 +840,12 @@ async def run_turn_stream(
         )
         _mark_reply_error(client, reply_id, TURN_FAILED_MESSAGE)
         raise TurnFailedError(TURN_FAILED_MESSAGE) from error
+    finally:
+        # Toda consulta de cliente é registrada, mesmo se o turno falhar.
+        _save_client_lookups(
+            client=client,
+            turno=turno_atual,
+        )
 
     assistant_content = "".join(response_chunks).strip()
 

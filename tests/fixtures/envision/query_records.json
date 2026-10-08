@@ -1,0 +1,84 @@
+{
+  "records": [
+    {
+      "id": 123,
+      "identification": "OS-123",
+      "summary": "GRP ARMENIA E GEORGIA MB SET 27",
+      "type": "ServiceOrder",
+      "category": "Viagem",
+      "active": true,
+      "status": {
+        "code": "EMITIDO",
+        "name": "Emitido",
+        "color": "#00AA00"
+      },
+      "totalValue": {
+        "value": 30000.0,
+        "currencyCode": "BRL"
+      },
+      "createdTime": {
+        "year": 2026,
+        "month": 2,
+        "day": 10
+      },
+      "startDate": {
+        "year": 2027,
+        "month": 9,
+        "day": 5
+      },
+      "endDate": {
+        "year": 2027,
+        "month": 9,
+        "day": 18
+      },
+      "travellers": [
+        {
+          "id": 1,
+          "fullName": "João Exemplo",
+          "firstName": "João",
+          "lastName": "Exemplo",
+          "birthDate": {
+            "year": 1980,
+            "month": 1,
+            "day": 1
+          },
+          "documents": [
+            {
+              "type": "CPF",
+              "number": "12345678909"
+            }
+          ],
+          "address": {
+            "street": "Rua Fictícia, 1"
+          }
+        },
+        {
+          "id": 2,
+          "fullName": "Maria Exemplo",
+          "firstName": "Maria",
+          "lastName": "Exemplo",
+          "documents": [
+            {
+              "type": "CPF",
+              "number": "98765432100"
+            }
+          ]
+        }
+      ],
+      "companyContext": {
+        "customer": {
+          "id": 9,
+          "name": "João Exemplo"
+        }
+      },
+      "responsibleName": "Consultora Fictícia",
+      "customFields": {}
+    }
+  ],
+  "pagingPivotId": null,
+  "pagingPivotValues": [],
+  "successful": true,
+  "errors": [],
+  "messages": [],
+  "warnings": []
+}

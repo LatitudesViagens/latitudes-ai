@@ -1,0 +1,64 @@
+{
+  "contacts": [
+    {
+      "_id": "c1",
+      "id": "c1",
+      "name": "João Exemplo",
+      "title": null,
+      "emails": [
+        {
+          "email": "Joao.Exemplo@Exemplo.com ",
+          "created_at": "2025-01-10T10:00:00.000-03:00",
+          "updated_at": "2025-01-10T10:00:00.000-03:00"
+        }
+      ],
+      "phones": [
+        {
+          "phone": "11999990000",
+          "type": "cellphone",
+          "whatsapp": true
+        }
+      ],
+      "deals": [
+        {
+          "_id": "d1",
+          "name": "Armênia e Geórgia",
+          "closed_at": null,
+          "win": null,
+          "prediction_date": null,
+          "deal_lost_reason_id": null
+        },
+        {
+          "_id": "d2",
+          "name": "Japão",
+          "closed_at": "2025-06-01T12:00:00.000-03:00",
+          "win": true,
+          "prediction_date": null,
+          "deal_lost_reason_id": null
+        }
+      ],
+      "organization_id": null,
+      "contact_custom_fields": [
+        {
+          "_id": "cf1",
+          "custom_field_id": "cpf_field",
+          "value": "123.456.789-09"
+        }
+      ],
+      "birthday": {
+        "day": 1,
+        "month": 1,
+        "year": 1980
+      },
+      "legal_bases": [],
+      "notes": "Anotação livre FICTÍCIA com dado pessoal",
+      "facebook": null,
+      "linkedin": null,
+      "skype": null,
+      "created_at": "2025-01-10T10:00:00.000-03:00",
+      "updated_at": "2025-06-01T12:00:00.000-03:00"
+    }
+  ],
+  "has_more": false,
+  "total": 1
+}

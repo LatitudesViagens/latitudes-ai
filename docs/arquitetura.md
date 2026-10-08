@@ -277,6 +277,7 @@ O piloto cumpriu o objetivo de validar o produto e revelou os pontos que precisa
   - "Preparando a resposta" aparece duplicado por um instante logo após o envio.
   - Abertura lenta no servidor local (8–17 s); conferir no Azure, com o servidor na mesma região do Supabase.
 
+- **Situação em 07/10/2026:** migrações 010 e 011 aplicadas; "Always On" ativo no Azure (`app-agora-prd`). As pendências da interface, a exceção do Kaspersky para o domínio da ÁGORA (desde 08/10/2026: `agora.latitudes.com.br`) (a abertura lenta vem dele: no celular abre em ~3 s), o plano de volta à versão anterior, a limpeza da Vercel e as fotos do Pexels ficam para depois da integração com as APIs dos sistemas da Latitudes, que é a prioridade agora.
 - Confirmar com o programador/Dedalus: serviço do Azure (Container Apps, App Service ou VM), branch de deploy e cadastro de `OPENROUTER_API_KEY`.
 - Plano de rollback recomendado: tags de versão (`v1.0`…), branch dedicada à produção e, no Azure, revisões/slots ou imagem anterior guardada.
 - Fotos com licença (Pexels) para documentos, quando a API do Pexels voltar.

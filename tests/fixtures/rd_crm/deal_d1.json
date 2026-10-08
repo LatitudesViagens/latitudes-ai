@@ -1,0 +1,33 @@
+{
+  "_id": "d1",
+  "id": "d1",
+  "name": "Armênia e Geórgia",
+  "deal_stage": {
+    "id": "s1",
+    "name": "Proposta enviada",
+    "nickname": "PE"
+  },
+  "deal_pipeline": {
+    "id": "p1",
+    "name": "Vendas | Grupo"
+  },
+  "user": {
+    "id": "u1",
+    "name": "Consultora Fictícia"
+  },
+  "win": null,
+  "closed_at": null,
+  "amount_total": 45000.0,
+  "amount_montly": 0.0,
+  "amount_unique": 45000.0,
+  "deal_source": {
+    "id": "ds1",
+    "name": "Indicação"
+  },
+  "campaign": null,
+  "deal_custom_fields": [],
+  "rating": 3,
+  "prediction_date": "2026-03-01",
+  "created_at": "2025-12-01T09:00:00.000-03:00",
+  "updated_at": "2026-01-15T09:00:00.000-03:00"
+}

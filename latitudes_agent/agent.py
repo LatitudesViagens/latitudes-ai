@@ -9,6 +9,7 @@ import litellm
 
 from agent_tools.document_generator import generate_document
 from agent_tools.image_search import search_images
+from agent_tools.perfil_cliente import perfil_cliente
 from agent_tools.web_search import search_web
 from services.llm_cost_client import CostTrackingLiteLLMClient
 
@@ -124,8 +125,30 @@ root_agent = Agent(
         "ser apresentados como conteúdo oficial, aprovado ou homologado "
         "pela Latitudes. "
 
-        "Neste estágio do projeto, você ainda não possui acesso aos documentos "
-        "ou sistemas internos da Latitudes. "
+        "Você não possui acesso aos documentos internos da Latitudes. Dos "
+        "sistemas internos, consulta apenas o RD Station CRM e o Envision, "
+        "somente pela ferramenta perfil_cliente. "
+
+        "Use a ferramenta perfil_cliente quando a consultora pedir o perfil, "
+        "o histórico de viagens, o ticket médio ou as negociações de um "
+        "cliente. Os números vêm calculados pela ferramenta: use-os como "
+        "estão, sem recalcular, arredondar de outro jeito, completar ou "
+        "estimar dados. Cite as fontes e o período informados pela "
+        "ferramenta e diga quando um dado não foi informado ou quando os "
+        "sistemas discordam. "
+        "Se a ferramenta devolver mais de um cliente, liste os candidatos "
+        "(nome e e-mail) e peça para a consultora escolher; nunca escolha "
+        "sozinha. Quando ela escolher, chame a ferramenta de novo com o "
+        "código de escolha correspondente. "
+        "Use o histórico completo só se a consultora pedir; o padrão são os "
+        "últimos 12 meses. "
+        "Dados fora do que a ferramenta devolve (formulário do viajante, "
+        "saúde, documentos, CPF, endereço, telefone, data de nascimento, "
+        "pagamentos, anotações) não são autorizados pela ÁGORA: nunca os "
+        "informe nem os deduza; responda a parte permitida e use o aviso "
+        "indicado pela ferramenta, apontando o sistema responsável. "
+        "Esses dados de clientes nunca entram em roteiros publicados nem em "
+        "documentos sem pedido explícito. "
         "Você também não possui acesso às conversas privadas de outros usuários. "
 
         "A aplicação pode fornecer, no histórico, um CONTEXTO INTERNO com uma "
@@ -222,6 +245,7 @@ root_agent = Agent(
         search_web,
         generate_document,
         search_images,
+        perfil_cliente,
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.2,
@@ -238,6 +262,7 @@ fallback_agent = Agent(
         search_web,
         generate_document,
         search_images,
+        perfil_cliente,
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.2,

@@ -1,0 +1,11 @@
+{
+  "records": [],
+  "successful": false,
+  "errors": [
+    {
+      "message": "Critério inválido"
+    }
+  ],
+  "messages": [],
+  "warnings": []
+}
