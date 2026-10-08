@@ -935,3 +935,55 @@ button [data-testid="stMarkdownContainer"],
     width: 100%;
     text-align: left !important;
 }
+
+/* ------------------------------------------------------------------
+   Celular: campo de mensagem e botões do fim da conversa (08/10).
+   No celular o Streamlit empilha as colunas; aqui elas ficam lado a lado.
+   ------------------------------------------------------------------ */
+
+@media (max-width: 640px) {
+    /* Campo de mensagem e botão Parar na mesma linha. */
+    [data-testid="stBottom"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stBottom"] [data-testid="stHorizontalBlock"]
+    > [data-testid="stColumn"]:first-child {
+        flex: 1 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
+
+    [data-testid="stBottom"] [data-testid="stHorizontalBlock"]
+    > [data-testid="stColumn"]:last-child {
+        flex: 0 0 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
+
+    /* Coluna do Parar vazia (sem resposta em andamento) não ocupa espaço. */
+    [data-testid="stBottom"] [data-testid="stHorizontalBlock"]
+    > [data-testid="stColumn"]:last-child:not(:has(button)) {
+        display: none !important;
+    }
+
+    /* Rodapé mais justo: menos espaço vazio abaixo do campo. */
+    [data-testid="stBottom"] > div {
+        padding-bottom: 8px !important;
+    }
+
+    /* Tentar novamente e Cancelar lado a lado. */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-retry_turn_"]) {
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-retry_turn_"])
+    > [data-testid="stColumn"] {
+        flex: 1 1 50% !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
+}

@@ -28,17 +28,37 @@ def create_conversation(
 def list_conversations(
     client: Client,
     user_id: str,
+    limit: int | None = None,
 ) -> list[dict]:
-    response = (
+    """Fixadas primeiro, depois as mais recentes. Com `limit`, só as primeiras
+    (as demais aparecem pela busca ou por "Mostrar mais")."""
+    query = (
         client.table("conversations")
         .select("*")
         .eq("user_id", str(user_id))
         .order("is_pinned", desc=True)
         .order("updated_at", desc=True)
+    )
+
+    if limit is not None:
+        query = query.limit(limit)
+
+    return query.execute().data
+
+
+def get_conversation(
+    client: Client,
+    conversation_id: str,
+) -> dict | None:
+    response = (
+        client.table("conversations")
+        .select("*")
+        .eq("id", str(conversation_id))
+        .limit(1)
         .execute()
     )
 
-    return response.data
+    return response.data[0] if response.data else None
 
 
 def delete_conversation(

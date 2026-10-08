@@ -51,6 +51,7 @@ from database.attachments import (
 from database.conversations import (
     create_conversation,
     delete_conversation,
+    get_conversation,
     list_conversations,
     rename_conversation,
     set_conversation_pinned,
@@ -1448,8 +1449,28 @@ def display_message_attachments(
             attachment.get("mime_type", "application/octet-stream")
         )
 
+        if not mime_type.startswith("image/"):
+            # Antes, todo arquivo era baixado inteiro a cada clique na tela;
+            # agora só quando a pessoa clica em baixar.
+            def load_file(attachment=attachment) -> bytes:
+                return download_chat_attachment(
+                    client=client,
+                    attachment=attachment,
+                )
+
+            st.download_button(
+                label=f"📎 {name}",
+                data=load_file,
+                file_name=name,
+                mime=mime_type,
+                key=f"download_{attachment.get('path', name)}",
+                on_click="ignore",
+                type="tertiary",
+            )
+            continue
+
         try:
-            data = download_chat_attachment(
+            data = _cached_attachment_image(
                 client=client,
                 attachment=attachment,
             )
@@ -1457,21 +1478,36 @@ def display_message_attachments(
             st.caption(f"📎 {name} — indisponível")
             continue
 
-        if mime_type.startswith("image/"):
-            st.image(
-                data,
-                caption=name,
-                width=320,
-            )
-        else:
-            st.download_button(
-                label=f"📎 {name}",
-                data=data,
-                file_name=name,
-                mime=mime_type,
-                key=f"download_{attachment.get('path', name)}",
-                type="tertiary",
-            )
+        st.image(
+            data,
+            caption=name,
+            width=320,
+        )
+
+
+def _cached_attachment_image(
+    client,
+    attachment: dict,
+) -> bytes:
+    """Imagem do anexo baixada uma vez por sessão (o arquivo não muda). O
+    cache é da sessão de quem está logado, não do servidor: o acesso continua
+    passando pelas regras do Storage."""
+    cache = st.session_state.setdefault(ATTACHMENT_CACHE_KEY, {})
+    path = str(attachment.get("path", ""))
+
+    if path in cache:
+        return cache[path]
+
+    data = download_chat_attachment(
+        client=client,
+        attachment=attachment,
+    )
+
+    if len(cache) >= ATTACHMENT_CACHE_MAX_ITEMS:
+        cache.pop(next(iter(cache)))
+
+    cache[path] = data
+    return data
 
 
 GENERATED_FILE_LABELS = {
@@ -1827,6 +1863,13 @@ def _build_shared_itinerary_context(itinerary: dict) -> str:
 # é feita na memória do servidor (instantânea); o banco só é consultado
 # quando a tarefa não está neste processo (ex.: servidor reiniciado).
 RUNNING_TURN_POLL_SECONDS = 1
+# Cada clique refaz a tela inteira: o trabalho por clique precisa ser o mesmo
+# para quem tem 5 ou 500 conversas. O restante aparece por "Mostrar mais" ou
+# pela busca.
+CONVERSATIONS_PAGE_SIZE = 30
+MESSAGES_PAGE_SIZE = 20
+ATTACHMENT_CACHE_KEY = "_attachment_image_cache"
+ATTACHMENT_CACHE_MAX_ITEMS = 40
 
 PREPARING_RESPONSE_HTML = """
 <style>
@@ -1882,6 +1925,8 @@ def running_turn_controls(
         except Exception:
             traceback.print_exc()
 
+        # Os botões Tentar novamente / Cancelar aparecem no fim da conversa.
+        st.session_state.scroll_to_bottom = True
         st.rerun(scope="app")
 
     if not is_turn_job_running(reply_id):
@@ -1894,6 +1939,8 @@ def running_turn_controls(
             reply = None
 
         if reply is None or not is_turn_active(reply):
+            # Resposta pronta (ou com erro): a tela vai até o fim dela.
+            st.session_state.scroll_to_bottom = True
             st.rerun(scope="app")
 
 
@@ -2159,11 +2206,18 @@ def show_authenticated_area() -> None:
 
     # Uma nova tentativa automática: falhas de rede pontuais não devem
     # derrubar a tela.
+    conversation_limit = st.session_state.setdefault(
+        "conversation_list_limit",
+        CONVERSATIONS_PAGE_SIZE,
+    )
+
     for attempt in range(2):
         try:
+            # Uma a mais só para saber se há "Mostrar mais".
             conversations = list_conversations(
                 client=client,
                 user_id=user_id,
+                limit=conversation_limit + 1,
             )
             break
         except Exception as error:
@@ -2179,7 +2233,33 @@ def show_authenticated_area() -> None:
         )
         return
 
-    log_duration("[UI] conversas_carregadas", started)
+    log_duration(
+        "[UI] conversas_carregadas",
+        started,
+        details=f"quantidade={min(len(conversations), conversation_limit)}",
+    )
+    has_more_conversations = len(conversations) > conversation_limit
+    conversations = conversations[:conversation_limit]
+
+    # Conversa aberta fora da primeira página (busca ou endereço ?c=): busca
+    # só ela, para não carregar a lista inteira.
+    selected_before = st.session_state.selected_conversation_id
+
+    if (
+        not st.session_state.new_conversation_mode
+        and selected_before is not None
+        and selected_before not in {c["id"] for c in conversations}
+    ):
+        try:
+            extra_conversation = get_conversation(
+                client=client,
+                conversation_id=selected_before,
+            )
+        except Exception:
+            extra_conversation = None
+
+        if extra_conversation is not None:
+            conversations.append(extra_conversation)
 
     conversation_ids = {
         conversation["id"]
@@ -2396,6 +2476,18 @@ def show_authenticated_area() -> None:
                         st.session_state.conversation_to_rename = None
                         st.session_state.conversation_visibility_target = None
                         st.rerun()
+
+        if has_more_conversations and not searching and st.button(
+            "Mostrar mais conversas",
+            icon=":material/expand_more:",
+            key="more_conversations_button",
+            type="tertiary",
+            use_container_width=True,
+        ):
+            st.session_state.conversation_list_limit = (
+                conversation_limit + CONVERSATIONS_PAGE_SIZE
+            )
+            st.rerun()
 
         st.divider()
 
@@ -2690,13 +2782,24 @@ def show_authenticated_area() -> None:
     show_flash_message()
 
     started = time.perf_counter()
+    message_window_key = f"message_window_{selected_id}"
+    message_window = st.session_state.get(
+        message_window_key,
+        MESSAGES_PAGE_SIZE,
+    )
 
     try:
+        # Uma a mais só para saber se há mensagens anteriores.
         all_messages = list_messages(
             client=client,
             conversation_id=selected_id,
+            limit=message_window + 1,
         )
-        log_duration("[UI] mensagens_carregadas", started)
+        log_duration(
+            "[UI] mensagens_carregadas",
+            started,
+            details=f"quantidade={min(len(all_messages), message_window)}",
+        )
     except Exception as error:
         log_duration(
             "[UI] mensagens_falhou",
@@ -2714,8 +2817,24 @@ def show_authenticated_area() -> None:
         client=client,
         messages=all_messages,
     )
+    has_older_messages = len(all_messages) > message_window
+
+    if has_older_messages:
+        all_messages = all_messages[1:]
+
     open_turn = find_open_turn(all_messages)
     messages = visible_messages(all_messages)
+
+    if has_older_messages and st.button(
+        "Carregar mensagens anteriores",
+        icon=":material/expand_less:",
+        key=f"older_messages_{selected_id}",
+        type="tertiary",
+    ):
+        st.session_state[message_window_key] = (
+            message_window + MESSAGES_PAGE_SIZE
+        )
+        st.rerun()
 
     if not messages:
         show_empty_conversation(flower_uri)
@@ -2754,7 +2873,9 @@ def show_authenticated_area() -> None:
                 "assistant",
                 avatar="/app/static/agora-avatar-v2.png",
             ):
-                if status == STATUS_ERROR:
+                if status == STATUS_ERROR and not is_turn_job_running(
+                    message["id"]
+                ):
                     # Mensagem amigável gravada pelo turno; os botões
                     # Tentar novamente / Cancelar ficam abaixo da conversa.
                     st.markdown(escape_dollar_signs(content))
@@ -2989,6 +3110,56 @@ def show_authenticated_area() -> None:
                     choice_prompt=choice_prompt,
                 )
 
+    # Tentar novamente / Cancelar ficam ANTES do marcador de fim da conversa:
+    # a rolagem para nele, e o que vem depois fica escondido atrás do campo.
+    turn_running = False
+    retry_clicked = cancel_clicked = False
+
+    if pending_offer is None and open_turn is not None:
+        reply = open_turn["reply"]
+        open_user_message = open_turn["user_message"]
+        turn_running = reply is not None and (
+            is_turn_active(reply)
+            # Logo após "Tentar novamente", o banco ainda diz "erro" (a
+            # tarefa leva ~1 s para gravar "processando"); sem isto a tela
+            # não acompanhava a resposta e ela só aparecia no clique seguinte.
+            or is_turn_job_running(reply["id"])
+        )
+
+        if not turn_running:
+            if reply is None:
+                # Pergunta salva sem resposta reservada (conversas antigas ou
+                # falha ao reservar): pode ser retomada do mesmo jeito.
+                st.html(
+                    """
+                    <div class="pending-message-notice">
+                        <strong>Mensagem aguardando resposta</strong>
+                        A conexão foi interrompida antes de a assistente
+                        concluir a última solicitação. Tente novamente
+                        ou cancele para editar a mensagem.
+                    </div>
+                    """,
+                )
+
+            retry_column, cancel_column = st.columns(2)
+
+            with retry_column:
+                retry_clicked = st.button(
+                    "Tentar novamente",
+                    icon=":material/refresh:",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"retry_turn_{open_user_message['id']}",
+                )
+
+            with cancel_column:
+                cancel_clicked = st.button(
+                    "Cancelar",
+                    icon=":material/stop_circle:",
+                    use_container_width=True,
+                    key=f"cancel_turn_{open_user_message['id']}",
+                )
+
     if messages:
         st.html(
             """
@@ -3047,9 +3218,15 @@ def show_authenticated_area() -> None:
                             parentWindow.innerHeight ||
                             parentDocument.documentElement.clientHeight;
 
+                        const bar = parentDocument
+                            .querySelector('[data-testid="stBottom"]');
+                        const covered = bar
+                            ? bar.getBoundingClientRect().height
+                            : 70;
+
                         button.classList.toggle(
                             "is-visible",
-                            targetPosition > viewportHeight - 70
+                            targetPosition > viewportHeight - covered
                         );
                     }};
 
@@ -3069,10 +3246,41 @@ def show_authenticated_area() -> None:
                     );
 
                     if ({should_auto_scroll}) {{
-                        target.scrollIntoView({{
-                            behavior: "instant",
-                            block: "end"
-                        }});
+                        // A tela ainda se acomoda depois de desenhada
+                        // ("Preparando a resposta", campo de mensagem): rola
+                        // de novo por ~2 s, até a pessoa rolar por conta própria.
+                        let userScrolled = false;
+                        const stopAutoScroll = () => {{ userScrolled = true; }};
+                        parentWindow.addEventListener("wheel", stopAutoScroll, {{ once: true, passive: true }});
+                        parentWindow.addEventListener("touchmove", stopAutoScroll, {{ once: true, passive: true }});
+                        const scrollToEnd = () => {{
+                            if (userScrolled) {{
+                                return;
+                            }}
+                            const currentTarget = parentDocument
+                                .getElementById("latitudes-chat-bottom");
+                            if (currentTarget) {{
+                                // O campo de mensagem fica fixo por cima do
+                                // rodapé: sem descontar a altura dele, o fim da
+                                // conversa ("Preparando a resposta") ficava
+                                // escondido atrás do campo.
+                                const bottomBar = parentDocument
+                                    .querySelector('[data-testid="stBottom"]');
+                                const barHeight = bottomBar
+                                    ? bottomBar.getBoundingClientRect().height
+                                    : 0;
+                                currentTarget.style.scrollMarginBottom =
+                                    (barHeight + 24) + "px";
+                                currentTarget.scrollIntoView({{
+                                    behavior: "instant",
+                                    block: "end"
+                                }});
+                            }}
+                        }};
+                        scrollToEnd();
+                        [300, 700, 1200, 2000].forEach(
+                            (delay) => setTimeout(scrollToEnd, delay)
+                        );
                     }}
 
                     setTimeout(updateButtonVisibility, 100);
@@ -3096,7 +3304,7 @@ def show_authenticated_area() -> None:
         reply = open_turn["reply"]
         open_user_message = open_turn["user_message"]
 
-        if reply is not None and is_turn_active(reply):
+        if turn_running:
             # A IA está respondendo em segundo plano: envio bloqueado e o
             # botão Parar ao lado do campo.
             show_chat_input(
@@ -3104,39 +3312,6 @@ def show_authenticated_area() -> None:
                 running_reply_id=reply["id"],
             )
             return
-
-        if reply is None:
-            # Pergunta salva sem resposta reservada (conversas antigas ou
-            # falha ao reservar): pode ser retomada do mesmo jeito.
-            st.html(
-                """
-                <div class="pending-message-notice">
-                    <strong>Mensagem aguardando resposta</strong>
-                    A conexão foi interrompida antes de a assistente
-                    concluir a última solicitação. Tente novamente
-                    ou cancele para editar a mensagem.
-                </div>
-                """,
-            )
-
-        retry_column, cancel_column = st.columns(2)
-
-        with retry_column:
-            retry_clicked = st.button(
-                "Tentar novamente",
-                icon=":material/refresh:",
-                type="primary",
-                use_container_width=True,
-                key=f"retry_turn_{open_user_message['id']}",
-            )
-
-        with cancel_column:
-            cancel_clicked = st.button(
-                "Cancelar",
-                icon=":material/stop_circle:",
-                use_container_width=True,
-                key=f"cancel_turn_{open_user_message['id']}",
-            )
 
         if retry_clicked or cancel_clicked:
             log_event(

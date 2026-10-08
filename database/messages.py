@@ -148,13 +148,18 @@ def get_message(
 def list_messages(
     client: Client,
     conversation_id: str,
+    limit: int | None = None,
 ) -> list[dict]:
-    response = (
+    """Mensagens em ordem de criação. Com `limit`, só as mais recentes (a tela
+    não pode ficar mais lenta conforme a conversa cresce)."""
+    query = (
         client.table("messages")
         .select("*")
         .eq("conversation_id", str(conversation_id))
-        .order("created_at")
-        .execute()
     )
 
-    return response.data
+    if limit is None:
+        return query.order("created_at").execute().data
+
+    recentes = query.order("created_at", desc=True).limit(limit).execute().data
+    return list(reversed(recentes))
