@@ -355,5 +355,5 @@ def show_suggestion_button(
         return
 
     st.session_state[state_key] = True
-    st.toast("Sugestão enviada ao TI para aprovação.")
+    st.toast("Sugestão enviada para a base de conhecimento.")
     st.rerun()
