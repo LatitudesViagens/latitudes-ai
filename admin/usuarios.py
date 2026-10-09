@@ -29,6 +29,7 @@ from database.user_registrations import (
 
 CREATED_USER_STATE_KEY = "admin_created_user"
 DELETED_USER_STATE_KEY = "admin_deleted_user"
+TI_ROLE_STATE_KEY = "admin_ti_role_changed"
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -176,6 +177,8 @@ def show_users_tab(client: Client) -> None:
             typed_password=typed_password,
         )
 
+    _show_ti_section(client)
+    st.divider()
     _show_delete_section(client)
 
     st.subheader("Histórico de cadastros")
@@ -215,6 +218,102 @@ def show_users_tab(client: Client) -> None:
         hide_index=True,
         use_container_width=True,
     )
+
+
+def _show_ti_section(client: Client) -> None:
+    """Quem acessa o Painel do TI. Antes só pelo SQL Editor do Supabase."""
+    changed = st.session_state.pop(TI_ROLE_STATE_KEY, None)
+
+    if changed:
+        st.success(changed)
+
+    st.subheader("Equipe de TI")
+    st.caption(
+        "Quem está aqui vê o Painel do TI: gastos, senhas, usuários, base de "
+        "conhecimento e modelos. A mudança vale no próximo login da pessoa."
+    )
+
+    try:
+        emails = supabase_admin.list_user_emails(client)
+        ti_ids = supabase_admin.list_ti_user_ids(client)
+    except Exception as error:
+        print(f"[TI] Falha ao listar a equipe de TI: {type(error).__name__}", flush=True)
+        st.error("Não foi possível carregar a equipe de TI.")
+        return
+
+    st.markdown(
+        "\n".join(
+            f"- {emails.get(user_id, user_id)}"
+            for user_id in sorted(ti_ids, key=lambda user_id: emails.get(user_id, user_id).lower())
+        )
+        or "Ninguém no TI."
+    )
+
+    own_id = str(st.session_state.get("user_id") or "")
+    user_ids = sorted(
+        (user_id for user_id in emails if user_id != own_id),
+        key=lambda user_id: emails[user_id].lower(),
+    )
+
+    if not user_ids:
+        return
+
+    with st.form("admin_ti_role_form", border=True):
+        target_user_id = st.selectbox(
+            "Usuário",
+            options=user_ids,
+            format_func=lambda user_id: emails[user_id] + (" (TI)" if user_id in ti_ids else ""),
+            index=None,
+            placeholder="Escolha o usuário",
+        )
+        grant_column, revoke_column = st.columns(2)
+
+        with grant_column:
+            grant = st.form_submit_button(
+                "Incluir no TI",
+                icon=":material/admin_panel_settings:",
+                use_container_width=True,
+            )
+
+        with revoke_column:
+            revoke = st.form_submit_button(
+                "Retirar do TI",
+                icon=":material/remove_moderator:",
+                use_container_width=True,
+            )
+
+    if not (grant or revoke):
+        return
+
+    if target_user_id is None:
+        st.warning("Escolha o usuário.")
+        return
+
+    try:
+        supabase_admin.set_ti_role(
+            requester=client,
+            target_user_id=target_user_id,
+            grant=bool(grant),
+        )
+    except supabase_admin.CannotRemoveOwnTiRoleError:
+        st.warning("Você não pode retirar o próprio acesso.")
+        return
+    except supabase_admin.LastTiError:
+        st.warning("A ÁGORA precisa de pelo menos uma pessoa no TI.")
+        return
+    except supabase_admin.NotAuthorizedError:
+        st.error("Acesso restrito ao TI.")
+        return
+    except Exception as error:
+        print(f"[TI] Falha ao mudar o papel TI: {type(error).__name__}", flush=True)
+        st.error("Não foi possível salvar. Tente novamente.")
+        return
+
+    st.session_state[TI_ROLE_STATE_KEY] = (
+        f"**{emails[target_user_id]}** "
+        + ("incluído(a) no TI." if grant else "retirado(a) do TI.")
+    )
+    st.rerun()
 
 
 def _show_delete_section(client: Client) -> None:

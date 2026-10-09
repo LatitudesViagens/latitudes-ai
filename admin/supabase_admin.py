@@ -237,3 +237,64 @@ def delete_user_account(
     service.auth.admin.delete_user(str(target_user_id))
 
     return email, full_name
+
+
+class CannotRemoveOwnTiRoleError(ValueError):
+    """O TI tentou retirar o próprio acesso ao painel."""
+
+
+class LastTiError(ValueError):
+    """Retirar o acesso deixaria a ÁGORA sem nenhum TI."""
+
+
+def list_ti_user_ids(requester: Client) -> set[str]:
+    """IDs de quem tem o papel TI (tabela user_roles, migração 009)."""
+    service = _service_client(requester)
+    rows = (
+        service.table("user_roles")
+        .select("user_id")
+        .eq("role", "ti")
+        .execute()
+        .data
+    )
+    return {str(row["user_id"]) for row in rows}
+
+
+def set_ti_role(
+    requester: Client,
+    target_user_id: str,
+    grant: bool,
+) -> None:
+    """Dá ou retira o acesso ao Painel do TI (só TI). Ninguém retira o
+    próprio acesso e a ÁGORA nunca fica sem TI."""
+    service = _service_client(requester)
+    requester_user = requester.auth.get_user()
+    requester_id = (
+        str(requester_user.user.id)
+        if requester_user is not None and requester_user.user is not None
+        else ""
+    )
+    target_user_id = str(target_user_id)
+
+    if grant:
+        service.table("user_roles").upsert(
+            {"user_id": target_user_id, "role": "ti"},
+            on_conflict="user_id",
+        ).execute()
+    else:
+        if target_user_id == requester_id:
+            raise CannotRemoveOwnTiRoleError("O TI não pode retirar o próprio acesso.")
+
+        current = list_ti_user_ids(requester)
+
+        if target_user_id in current and len(current) <= 1:
+            raise LastTiError("A ÁGORA precisa de pelo menos uma pessoa no TI.")
+
+        service.table("user_roles").delete().eq("user_id", target_user_id).execute()
+
+    # Só IDs no log (sem e-mail), para auditoria no servidor.
+    print(
+        f"[TI] Papel TI {'concedido' if grant else 'retirado'}: "
+        f"alvo={target_user_id[:8]} por={requester_id[:8]}",
+        flush=True,
+    )

@@ -39,7 +39,9 @@ from admin.painel import (
 from admin.base_conhecimento import show_suggestion_button
 from admin.senhas import needs_password_change, show_password_change_screen
 from ui.busca import show_conversation_search
+from ui.lista_conversas import pop_pending_action, show_conversation_list
 from ui.cookies import read_encrypted_cookie
+from ui.medicao import show_timing_probe
 from ui.modelos_prompt import show_template_picker
 from database.ai_usage import log_ai_usage
 from database.client import get_supabase_client
@@ -2079,6 +2081,62 @@ def select_conversation(conversation_id: str) -> None:
     close_admin_panel()
 
 
+def start_new_conversation() -> None:
+    st.session_state.selected_conversation_id = None
+    st.session_state.new_conversation_mode = True
+    st.session_state.conversation_to_delete = None
+    st.session_state.conversation_to_rename = None
+    st.session_state.conversation_visibility_target = None
+    st.session_state.message_to_publish = None
+    close_admin_panel()
+
+
+def apply_conversation_list_action(client) -> None:
+    """Clique na lista de conversas (ui/lista_conversas.py), aplicado antes
+    de carregar a tela: assim o clique roda a tela uma vez só."""
+    action = pop_pending_action()
+
+    if action is None:
+        return
+
+    conversation_id = action["id"]
+    action_type = action["type"]
+
+    if action_type == "select":
+        select_conversation(conversation_id)
+        return
+
+    st.session_state.conversation_to_delete = None
+    st.session_state.conversation_to_rename = None
+    st.session_state.conversation_visibility_target = None
+
+    if action_type == "visibility":
+        st.session_state.conversation_visibility_target = conversation_id
+    elif action_type == "rename":
+        st.session_state.conversation_to_rename = conversation_id
+    elif action_type == "delete":
+        st.session_state.conversation_to_delete = conversation_id
+    elif action_type == "pin":
+        try:
+            conversation = get_conversation(
+                client=client,
+                conversation_id=conversation_id,
+            )
+
+            if conversation is not None:
+                set_conversation_pinned(
+                    client=client,
+                    conversation_id=conversation_id,
+                    is_pinned=not conversation.get("is_pinned"),
+                )
+        except Exception:
+            traceback.print_exc()
+            flash(
+                "Não foi possível fixar a conversa. Tente novamente.",
+                kind="error",
+            )
+
+
 def show_authenticated_area() -> None:
     client = st.session_state.client
     user_id = st.session_state.user_id
@@ -2201,6 +2259,8 @@ def show_authenticated_area() -> None:
         """,
     )
 
+    apply_conversation_list_action(client)
+
     started = time.perf_counter()
     conversations = None
 
@@ -2305,20 +2365,14 @@ def show_authenticated_area() -> None:
         )
 
 
-        if st.button(
+        # on_click roda antes da tela: o clique roda a tela uma vez só.
+        st.button(
             "＋ Nova conversa",
             key="new_conversation_button",
             use_container_width=True,
             type="primary",
-        ):
-            st.session_state.selected_conversation_id = None
-            st.session_state.new_conversation_mode = True
-            st.session_state.conversation_to_delete = None
-            st.session_state.conversation_to_rename = None
-            st.session_state.conversation_visibility_target = None
-            st.session_state.message_to_publish = None
-            close_admin_panel()
-            st.rerun()
+            on_click=start_new_conversation,
+        )
 
         searching = show_conversation_search(
             client=client,
@@ -2335,147 +2389,12 @@ def show_authenticated_area() -> None:
 
         # Durante a busca, só os resultados aparecem; apagando a busca, a
         # lista volta.
-        for conversation in [] if searching else conversations:
-            conversation_id = conversation["id"]
-            is_selected = (
-                conversation_id
-                == st.session_state.selected_conversation_id
+        if not searching:
+            # Um componente leve no lugar de ~85 elementos por conversa.
+            show_conversation_list(
+                conversations=conversations,
+                selected_id=st.session_state.selected_conversation_id,
             )
-
-            (
-                conversation_column,
-                pin_column,
-                visibility_column,
-                menu_column,
-            ) = st.columns(
-                [0.62, 0.12, 0.12, 0.14],
-                gap="small",
-            )
-
-            with conversation_column:
-                if st.button(
-                    conversation["title"],
-                    key=f"conversation_{conversation_id}",
-                    use_container_width=True,
-                    type=(
-                        "primary"
-                        if is_selected
-                        else "secondary"
-                    ),
-                ):
-                    select_conversation(conversation_id)
-                    st.rerun()
-
-            with pin_column:
-                if conversation.get("is_pinned"):
-                    st.button(
-                        "",
-                        icon=":material/keep:",
-                        key=f"pinned_indicator_{conversation_id}",
-                        help="Conversa fixada",
-                        type="tertiary",
-                        disabled=True,
-                        use_container_width=True,
-                    )
-
-            with visibility_column:
-                visibility = conversation.get(
-                    "visibility",
-                    "private",
-                )
-
-                visibility_icon = (
-                    ":material/lock_open:"
-                    if visibility == "public"
-                    else ":material/lock:"
-                )
-
-                visibility_help = (
-                    "Conversa pública"
-                    if visibility == "public"
-                    else "Conversa privada"
-                )
-
-                if st.button(
-                    "",
-                    icon=visibility_icon,
-                    key=f"visibility_{conversation_id}",
-                    help=visibility_help,
-                    type="tertiary",
-                    use_container_width=True,
-                ):
-                    st.session_state.conversation_visibility_target = (
-                        conversation_id
-                    )
-                    st.session_state.conversation_to_delete = None
-                    st.session_state.conversation_to_rename = None
-                    st.rerun()
-
-            with menu_column:
-                with st.popover(
-                    "⋮",
-                    key=f"conversation_menu_{conversation_id}",
-                    help="Opções da conversa",
-                    type="tertiary",
-                    use_container_width=True,
-                ):
-                    is_pinned = bool(
-                        conversation.get("is_pinned")
-                    )
-
-                    pin_label = (
-                        "Desafixar conversa"
-                        if is_pinned
-                        else "Fixar conversa"
-                    )
-
-                    pin_icon = (
-                        ":material/keep_off:"
-                        if is_pinned
-                        else ":material/keep:"
-                    )
-
-                    if st.button(
-                        pin_label,
-                        icon=pin_icon,
-                        key=f"pin_conversation_{conversation_id}",
-                        type="tertiary",
-                        use_container_width=True,
-                    ):
-                        set_conversation_pinned(
-                            client=client,
-                            conversation_id=conversation_id,
-                            is_pinned=not is_pinned,
-                        )
-                        st.rerun()
-
-                    if st.button(
-                        "Renomear conversa",
-                        icon=":material/edit:",
-                        key=f"rename_conversation_{conversation_id}",
-                        type="tertiary",
-                        use_container_width=True,
-                    ):
-                        st.session_state.conversation_to_rename = (
-                            conversation_id
-                        )
-                        st.session_state.conversation_to_delete = None
-                        st.session_state.conversation_visibility_target = None
-                        st.rerun()
-
-                    if st.button(
-                        "Excluir conversa",
-                        icon=":material/delete:",
-                        key=f"delete_conversation_{conversation_id}",
-                        type="tertiary",
-                        use_container_width=True,
-                    ):
-                        st.session_state.conversation_to_delete = (
-                            conversation_id
-                        )
-                        st.session_state.conversation_to_rename = None
-                        st.session_state.conversation_visibility_target = None
-                        st.rerun()
 
         if has_more_conversations and not searching and st.button(
             "Mostrar mais conversas",
@@ -3224,6 +3143,10 @@ def show_authenticated_area() -> None:
                             ? bar.getBoundingClientRect().height
                             : 70;
 
+                        // Sempre um pouco acima do campo de mensagem (no
+                        // celular a barra é mais alta e a seta cobria o enviar).
+                        button.style.bottom = (covered + 16) + "px";
+
                         button.classList.toggle(
                             "is-visible",
                             targetPosition > viewportHeight - covered
@@ -3424,6 +3347,7 @@ def show_authenticated_area() -> None:
 
 
 _run_started = time.perf_counter()
+_run_started_epoch = time.time()
 
 try:
     load_css()
@@ -3435,6 +3359,7 @@ try:
 
     if not st.session_state.authenticated:
         show_login()
+        show_timing_probe(_run_started_epoch)
         st.stop()
 
     # Senha redefinida pelo TI: só a tela de criar senha nova até trocar.
@@ -3454,5 +3379,6 @@ try:
         st.stop()
 
     show_authenticated_area()
+    show_timing_probe(_run_started_epoch)
 finally:
     log_duration("[UI] execucao_da_tela", _run_started)
