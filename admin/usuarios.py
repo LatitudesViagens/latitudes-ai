@@ -229,7 +229,7 @@ def _show_ti_section(client: Client) -> None:
 
     st.subheader("Equipe de TI")
     st.caption(
-        "Quem está aqui vê o Painel do TI: gastos, senhas, usuários, base de "
+        "Quem está aqui vê o Painel de controle: gastos, senhas, usuários, base de "
         "conhecimento e modelos. A mudança vale no próximo login da pessoa."
     )
 

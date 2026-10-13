@@ -31,7 +31,7 @@ def show_admin_sidebar_button(client: Client) -> None:
         return
 
     if st.button(
-        "Painel do TI",
+        "Painel de controle",
         icon=":material/admin_panel_settings:",
         use_container_width=True,
         key="open_admin_panel",
@@ -62,7 +62,7 @@ def show_admin_panel(client: Client) -> None:
     )
 
     with header_column:
-        st.title("Painel do TI")
+        st.title("Painel de controle")
 
     with back_column:
         if st.button(
