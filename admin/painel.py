@@ -74,21 +74,20 @@ def show_admin_panel(client: Client) -> None:
             close_admin_panel()
             st.rerun()
 
-    costs_tab, passwords_tab, users_tab, knowledge_tab, templates_tab = st.tabs(
-        ["Gastos", "Senhas", "Usuários", "Base de conhecimento", "Modelos de prompt"]
+    # Só a aba escolhida roda: com st.tabs, as 5 abas (e as consultas de
+    # todas) rodavam a cada clique em qualquer uma.
+    sections = {
+        "Gastos": show_costs_tab,
+        "Senhas": show_passwords_tab,
+        "Usuários": show_users_tab,
+        "Base de conhecimento": show_knowledge_tab,
+        "Modelos de prompt": show_templates_tab,
+    }
+    chosen = st.segmented_control(
+        "Seção do painel",
+        options=list(sections),
+        default="Gastos",
+        key="admin_panel_section",
+        label_visibility="collapsed",
     )
-
-    with costs_tab:
-        show_costs_tab(client)
-
-    with passwords_tab:
-        show_passwords_tab(client)
-
-    with users_tab:
-        show_users_tab(client)
-
-    with knowledge_tab:
-        show_knowledge_tab(client)
-
-    with templates_tab:
-        show_templates_tab(client)
+    sections[chosen or "Gastos"](client)

@@ -11,6 +11,7 @@ import streamlit as st
 from supabase import Client
 
 from admin import supabase_admin
+from admin.cache import clear_user_emails, user_emails
 from admin.senhas import (
     MIN_PASSWORD_LENGTH,
     format_date,
@@ -114,6 +115,7 @@ def _register_user(
         )
         return
 
+    clear_user_emails()
     st.session_state[CREATED_USER_STATE_KEY] = (
         full_name,
         email,
@@ -198,7 +200,7 @@ def show_users_tab(client: Client) -> None:
         return
 
     try:
-        emails = supabase_admin.list_user_emails(client)
+        emails = user_emails(client)
     except Exception:
         emails = {}
 
@@ -234,7 +236,7 @@ def _show_ti_section(client: Client) -> None:
     )
 
     try:
-        emails = supabase_admin.list_user_emails(client)
+        emails = user_emails(client)
         ti_ids = supabase_admin.list_ti_user_ids(client)
     except Exception as error:
         print(f"[TI] Falha ao listar a equipe de TI: {type(error).__name__}", flush=True)
@@ -334,7 +336,7 @@ def _show_delete_section(client: Client) -> None:
     )
 
     try:
-        emails = supabase_admin.list_user_emails(client)
+        emails = user_emails(client)
     except Exception as error:
         print(f"[TI] Falha ao listar usuários: {type(error).__name__}", flush=True)
         st.error("Não foi possível carregar a lista de usuários.")
@@ -450,5 +452,6 @@ def _delete_user(
             flush=True,
         )
 
+    clear_user_emails()
     st.session_state[DELETED_USER_STATE_KEY] = full_name or email
     st.rerun()

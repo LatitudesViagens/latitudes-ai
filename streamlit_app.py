@@ -1,6 +1,4 @@
-import base64
 from html import escape
-from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -101,7 +99,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_DIR = PROJECT_ROOT / "assets"
 CSS_FILE = ASSETS_DIR / "styles.css"
 LOGO_FILE = ASSETS_DIR / "logo-latitudes.png"
-LOGIN_BACKGROUND_FILE = ASSETS_DIR / "login-background.jpg"
 
 CHAT_FILE_TYPES = [
     "csv",
@@ -116,36 +113,37 @@ CHAT_FILE_TYPES = [
 ]
 
 
-with Image.open(LOGO_FILE) as logo:
-    flower = logo.convert("RGBA").crop(
-        (
-            170,
-            0,
-            296,
-            80,
+@st.cache_resource(show_spinner=False)
+def _page_icon() -> Image.Image:
+    """Ícone da aba (flor centralizada), montado uma vez por processo."""
+    with Image.open(LOGO_FILE) as logo:
+        flower = logo.convert("RGBA").crop(
+            (
+                170,
+                0,
+                296,
+                80,
+            )
         )
-    )
 
-    page_icon = Image.new(
+    icon = Image.new(
         "RGBA",
         (128, 128),
         (0, 0, 0, 0),
     )
-
-    icon_position = (
-        (page_icon.width - flower.width) // 2,
-        (page_icon.height - flower.height) // 2,
-    )
-
-    page_icon.alpha_composite(
+    icon.alpha_composite(
         flower,
-        icon_position,
+        (
+            (icon.width - flower.width) // 2,
+            (icon.height - flower.height) // 2,
+        ),
     )
+    return icon
 
 
 st.set_page_config(
     page_title="ÁGORA | Latitudes AI",
-    page_icon=page_icon,
+    page_icon=_page_icon(),
     layout="wide",
     # "auto": aberta no computador, fechada no celular (abre pelo menu).
     initial_sidebar_state="auto",
@@ -271,44 +269,26 @@ def split_sources_footer(content: str) -> tuple[str, str | None]:
     return body, "Fontes consultadas: " + " · ".join(links)
 
 
+@st.cache_resource(show_spinner=False)
+def _read_css() -> str:
+    """Lido do disco uma vez por processo (antes: a cada clique)."""
+    return CSS_FILE.read_text(encoding="utf-8")
+
+
 def load_css() -> None:
-    css = CSS_FILE.read_text(encoding="utf-8")
-    st.html(f"<style>{css}</style>")
+    st.html(f"<style>{_read_css()}</style>")
 
 
-def file_to_data_uri(
-    file_path: Path,
-    mime_type: str,
-) -> str:
-    encoded_file = base64.b64encode(
-        file_path.read_bytes()
-    ).decode("utf-8")
-
-    return f"data:{mime_type};base64,{encoded_file}"
+# Imagens servidas como arquivos (static/): o navegador baixa uma vez e guarda.
+# Antes iam convertidas em texto (base64) dentro da tela a cada clique — o
+# fundo do login sozinho eram ~216 KB por interação.
+FLOWER_URL = "/app/static/agora-flor.png"
+LOGO_URL = "/app/static/logo-latitudes.png"
+LOGIN_BACKGROUND_URL = "/app/static/login-fundo.jpg"
 
 
 def get_flower_data_uri() -> str:
-    with Image.open(LOGO_FILE) as logo:
-        flower_image = logo.convert("RGBA").crop(
-            (
-                170,
-                0,
-                296,
-                80,
-            )
-        )
-
-    image_buffer = BytesIO()
-    flower_image.save(
-        image_buffer,
-        format="PNG",
-    )
-
-    encoded_image = base64.b64encode(
-        image_buffer.getvalue()
-    ).decode("utf-8")
-
-    return f"data:image/png;base64,{encoded_image}"
+    return FLOWER_URL
 
 
 def user_display_name(user) -> str | None:
@@ -570,10 +550,7 @@ def show_login() -> None:
         """,
     )
 
-    background_uri = file_to_data_uri(
-        LOGIN_BACKGROUND_FILE,
-        "image/jpeg",
-    )
+    background_uri = LOGIN_BACKGROUND_URL
 
     flower_uri = get_flower_data_uri()
 
@@ -1421,10 +1398,7 @@ def create_title_from_message(
 def show_empty_conversation(flower_uri: str) -> None:
     """Tela de boas-vindas da conversa vazia (os modelos de prompt aparecem
     logo abaixo, como botões arredondados)."""
-    logo_uri = file_to_data_uri(
-        LOGO_FILE,
-        "image/png",
-    )
+    logo_uri = LOGO_URL
 
     st.html(
         f"""
@@ -1606,8 +1580,13 @@ def display_image_gallery(
 
 
 @st.cache_resource(show_spinner=False)
-def _initial_avatar(initial: str) -> Image.Image:
-    """Círculo oliva com a inicial de quem está logado (avatar do balão)."""
+def _initial_avatar(initial: str) -> str:
+    """Círculo oliva com a inicial de quem está logado (avatar do balão), já
+    como PNG em texto: antes a imagem era convertida e registrada de novo para
+    cada pergunta na tela, a cada clique."""
+    import base64
+    from io import BytesIO
+
     from PIL import ImageDraw, ImageFont
 
     size = 96
@@ -1622,10 +1601,12 @@ def _initial_avatar(initial: str) -> Image.Image:
         font=font,
         anchor="mm",
     )
-    return image
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def _user_avatar() -> Image.Image:
+def _user_avatar() -> str:
     label = str(
         st.session_state.get("user_name")
         or st.session_state.get("user_email")

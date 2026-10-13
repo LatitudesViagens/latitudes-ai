@@ -12,6 +12,7 @@ import streamlit as st
 from supabase import Client
 
 from admin import supabase_admin
+from admin.cache import user_emails
 from database.password_resets import (
     list_password_resets,
     log_password_reset,
@@ -83,7 +84,7 @@ def show_passwords_tab(client: Client) -> None:
         return
 
     try:
-        emails = supabase_admin.list_user_emails(client)
+        emails = user_emails(client)
     except Exception as error:
         print(f"[TI] Falha ao listar usuários: {type(error).__name__}", flush=True)
         st.error("Não foi possível carregar a lista de usuários.")

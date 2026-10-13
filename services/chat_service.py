@@ -70,6 +70,7 @@ class TurnFailedError(RuntimeError):
 class TurnInProgressError(RuntimeError):
     """Já existe uma resposta em andamento nesta conversa."""
 MAX_HISTORY_MESSAGES = 30
+TURN_MESSAGES_WINDOW = 120
 ATTACHMENT_REFERENCE_PATTERN = re.compile(
     r"\b(anex|arquiv|imagem|foto|pdf|document|planilha|word|excel|csv)\w*\b",
     flags=re.IGNORECASE,
@@ -719,9 +720,12 @@ async def run_turn_stream(
     tentativas: marca 'erro' com mensagem amigável e lança TurnFailedError.
     Interrupção (página recarregada, "Parar"): marca 'erro' e repassa.
     """
+    # Só as mais recentes: a IA recebe no máximo MAX_HISTORY_MESSAGES; a folga
+    # cobre turnos cancelados/com erro que o filtro do histórico descarta.
     messages = list_messages(
         client=client,
         conversation_id=conversation_id,
+        limit=TURN_MESSAGES_WINDOW,
     )
     reply = next(
         (

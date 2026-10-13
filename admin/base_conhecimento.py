@@ -14,6 +14,7 @@ import streamlit as st
 from supabase import Client
 
 from admin import supabase_admin
+from admin.cache import user_emails
 from database.ai_usage import log_ai_usage
 from database.knowledge_entries import (
     STATUS_APPROVED,
@@ -123,7 +124,7 @@ def _emails(client: Client) -> dict[str, str]:
         return {}
 
     try:
-        return supabase_admin.list_user_emails(client)
+        return user_emails(client)
     except Exception as error:
         print(f"[TI] Falha ao listar e-mails: {type(error).__name__}", flush=True)
         return {}

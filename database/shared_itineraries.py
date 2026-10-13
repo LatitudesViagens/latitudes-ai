@@ -312,12 +312,13 @@ def find_shared_itineraries_for_message(
         "interests,"
         "budget_range,"
         "keywords,"
-        "content,"
-        "sources,"
         "published_at,"
         "updated_at"
     )
 
+    # Sem "content" e "sources": a comparação usa só destino e palavras-chave,
+    # e o texto do roteiro escolhido é buscado depois (get_shared_itinerary).
+    # Antes vinham os 100 textos completos, na tela, antes de a IA começar.
     response = (
         client.table("shared_itineraries")
         .select(columns)

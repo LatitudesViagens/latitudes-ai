@@ -9,3 +9,11 @@ font = "sans-serif"
 toolbarMode = "minimal"
 [server]
 enableStaticServing = true
+# Produção: sem vigiar arquivos (gasta CPU no servidor) e com as telas
+# comprimidas no caminho até o navegador (CSS e textos repetidos a cada clique).
+fileWatcherType = "none"
+runOnSave = false
+enableWebsocketCompression = true
+
+[browser]
+gatherUsageStats = false
