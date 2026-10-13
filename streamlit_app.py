@@ -280,11 +280,13 @@ def load_css() -> None:
 
 
 # Imagens servidas como arquivos (static/): o navegador baixa uma vez e guarda.
+# Sem "/" no começo: em produção a ÁGORA fica em /agora/ (o HTML do st.html
+# não recebe esse prefixo; "/app/static/..." caía num redirecionamento).
 # Antes iam convertidas em texto (base64) dentro da tela a cada clique — o
 # fundo do login sozinho eram ~216 KB por interação.
-FLOWER_URL = "/app/static/agora-flor.png"
-LOGO_URL = "/app/static/logo-latitudes.png"
-LOGIN_BACKGROUND_URL = "/app/static/login-fundo.jpg"
+FLOWER_URL = "app/static/agora-flor.png"
+LOGO_URL = "app/static/logo-latitudes.png"
+LOGIN_BACKGROUND_URL = "app/static/login-fundo.jpg"
 
 
 def get_flower_data_uri() -> str:
