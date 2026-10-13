@@ -63,10 +63,19 @@ def warm_up() -> None:
 
 
 def is_running(reply_id: str) -> bool:
+    """Tarefa em andamento para a TELA. Depois do "Parar", conta como parada
+    na hora, mesmo que a thread ainda leve alguns segundos para encerrar
+    (ex.: no meio da busca na base de conhecimento, que não é interrompida no
+    meio); antes a tela ficava em "Preparando a resposta" até a thread sair."""
     with _lock:
         job = _jobs.get(str(reply_id))
 
-    return job is not None and job.thread is not None and job.thread.is_alive()
+    return (
+        job is not None
+        and not job.cancel_requested
+        and job.thread is not None
+        and job.thread.is_alive()
+    )
 
 
 def start_turn_job(

@@ -1703,6 +1703,7 @@ def show_chat_input(
                 # Bloqueia só enquanto a mensagem é gravada (execução curta).
                 submit_mode="disable",
                 disabled=disabled or running_reply_id is not None,
+                on_submit=submit_chat_message,
             )
 
         if running_reply_id is not None:
@@ -1988,13 +1989,6 @@ def answer_turn(
     reply_id = turn["reply"]["id"]
     started = time.perf_counter()
 
-    # Aparece logo abaixo da pergunta, sem esperar a próxima atualização.
-    with st.chat_message(
-        "assistant",
-        avatar="/app/static/agora-avatar-v2.png",
-    ):
-        st.html(PREPARING_RESPONSE_HTML)
-
     try:
         offer_created = create_shared_itinerary_offer(
             client=client,
@@ -2022,7 +2016,105 @@ def answer_turn(
         )
 
     st.session_state.scroll_to_bottom = True
-    st.rerun()
+
+
+def submit_chat_message() -> None:
+    """on_submit do campo de mensagem, ANTES de a tela rodar: grava a
+    pergunta e dispara a IA. Assim o envio roda a tela uma vez só (antes,
+    duas: uma para gravar e outra para mostrar). Erros viram aviso (flash) e
+    o texto volta ao campo."""
+    prompt, uploaded_files = parse_chat_submission(
+        st.session_state.get(CHAT_INPUT_KEY)
+    )
+
+    if not (prompt or uploaded_files):
+        return
+
+    if not prompt:
+        prompt = "Analise os arquivos anexados."
+
+    client = st.session_state.client
+    user_id = st.session_state.user_id
+    conversation_id = st.session_state.selected_conversation_id
+    new_conversation = conversation_id is None
+
+    if new_conversation:
+        try:
+            conversation_id = create_conversation(
+                client=client,
+                user_id=user_id,
+                title=create_title_from_message(
+                    prompt,
+                    uploaded_files=uploaded_files,
+                ),
+            )["id"]
+        except Exception:
+            traceback.print_exc()
+            flash("Não foi possível criar uma conversa.", kind="error")
+            restore_chat_input(prompt)
+            return
+
+    def discard_new_conversation() -> None:
+        # Nada foi salvo: não deixa uma conversa vazia para trás.
+        if not new_conversation:
+            return
+
+        try:
+            delete_conversation(
+                client=client,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            traceback.print_exc()
+
+    try:
+        attachments = upload_chat_attachments(
+            client=client,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            uploaded_files=uploaded_files,
+        )
+    except ValueError as error:
+        discard_new_conversation()
+        flash(str(error))
+        restore_chat_input(prompt)
+        return
+    except Exception:
+        traceback.print_exc()
+        discard_new_conversation()
+        flash(
+            "Não foi possível enviar os arquivos. O texto voltou para o campo "
+            "de mensagem.",
+            kind="error",
+        )
+        restore_chat_input(prompt)
+        return
+
+    # A pergunta é gravada ANTES de qualquer outra etapa.
+    turn = save_turn(
+        client=client,
+        conversation_id=conversation_id,
+        prompt=prompt,
+        attachments=attachments,
+        new_conversation=new_conversation,
+    )
+
+    if turn is None:
+        discard_new_conversation()
+        return
+
+    if new_conversation:
+        st.session_state.selected_conversation_id = conversation_id
+        st.session_state.new_conversation_mode = False
+
+    answer_turn(
+        client=client,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        prompt=prompt,
+        turn=turn,
+        new_conversation=new_conversation,
+    )
 
 
 def answer_shared_choice(
@@ -2062,6 +2154,87 @@ def select_conversation(conversation_id: str) -> None:
     st.session_state.message_to_publish = None
     st.session_state.scroll_to_bottom = True
     close_admin_panel()
+
+
+def handle_turn_button(
+    action: str,
+    user_id: str,
+    conversation_id: str,
+    reply: dict | None,
+    user_message: dict,
+) -> None:
+    """Tentar novamente / Cancelar (on_click, antes de a tela rodar)."""
+    client = st.session_state.client
+    log_event(
+        "[UI] clique_"
+        + ("tentar_novamente" if action == "retry" else "cancelar")
+        + f" pergunta={str(user_message['id'])[:8]}"
+    )
+
+    try:
+        # A nova tentativa e o cancelamento usam sempre o MESMO registro de
+        # resposta; só é criado se ainda não existir.
+        reply_id = (
+            reply["id"]
+            if reply is not None
+            else reserve_reply(
+                client=client,
+                conversation_id=conversation_id,
+                user_message_id=user_message["id"],
+            )["id"]
+        )
+    except Exception:
+        traceback.print_exc()
+        flash(
+            "Não foi possível concluir a ação agora. Verifique a conexão e "
+            "tente novamente.",
+            kind="error",
+        )
+        return
+
+    if action == "retry":
+        started_job = start_turn_job(
+            client=client,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            reply_id=reply_id,
+        )
+        log_event(f"[UI] tentar_novamente iniciou={started_job}")
+
+        if not started_job:
+            # Logo depois do "Parar", a tarefa anterior pode levar alguns
+            # segundos para encerrar por dentro.
+            flash(
+                "A resposta anterior ainda está sendo encerrada. Tente de "
+                "novo em alguns segundos."
+            )
+
+        st.session_state.scroll_to_bottom = True
+        return
+
+    try:
+        cancel_turn(
+            client=client,
+            reply_id=reply_id,
+        )
+    except Exception:
+        traceback.print_exc()
+        flash(
+            "Não foi possível cancelar agora. Tente novamente.",
+            kind="error",
+        )
+    else:
+        # O texto volta ao campo para a pessoa completar e reenviar.
+        restore_chat_input(str(user_message.get("content", "")))
+
+
+def _increase_session_value(
+    key: str,
+    current: int,
+    step: int,
+) -> None:
+    """"Mostrar mais" / "Carregar anteriores" (on_click: uma execução só)."""
+    st.session_state[key] = current + step
 
 
 def start_new_conversation() -> None:
@@ -2379,17 +2552,20 @@ def show_authenticated_area() -> None:
                 selected_id=st.session_state.selected_conversation_id,
             )
 
-        if has_more_conversations and not searching and st.button(
-            "Mostrar mais conversas",
-            icon=":material/expand_more:",
-            key="more_conversations_button",
-            type="tertiary",
-            use_container_width=True,
-        ):
-            st.session_state.conversation_list_limit = (
-                conversation_limit + CONVERSATIONS_PAGE_SIZE
+        if has_more_conversations and not searching:
+            st.button(
+                "Mostrar mais conversas",
+                icon=":material/expand_more:",
+                key="more_conversations_button",
+                type="tertiary",
+                use_container_width=True,
+                on_click=_increase_session_value,
+                args=(
+                    "conversation_list_limit",
+                    conversation_limit,
+                    CONVERSATIONS_PAGE_SIZE,
+                ),
             )
-            st.rerun()
 
         st.divider()
 
@@ -2429,6 +2605,16 @@ def show_authenticated_area() -> None:
 
     if is_admin_panel_open():
         show_admin_panel(client)
+        # O campo de mensagem continua na tela, escondido: quando ele some e
+        # reaparece, o Streamlit roda a tela duas vezes (piscava ao abrir e ao
+        # fechar o painel).
+        st.html(
+            "<style>[data-testid='stBottom'] { display: none !important; }</style>"
+        )
+        show_chat_input(
+            "Digite sua mensagem...",
+            disabled=True,
+        )
         return
 
     conversation_to_delete = (
@@ -2563,101 +2749,7 @@ def show_authenticated_area() -> None:
             on_choose=restore_chat_input,
         )
 
-        submission = show_chat_input("Digite sua mensagem...")
-        prompt, uploaded_files = parse_chat_submission(submission)
-
-        if prompt or uploaded_files:
-            if not prompt:
-                prompt = "Analise os arquivos anexados."
-
-            conversation_title = create_title_from_message(
-                prompt,
-                uploaded_files=uploaded_files,
-            )
-
-            try:
-                new_conversation = create_conversation(
-                    client=client,
-                    user_id=user_id,
-                    title=conversation_title,
-                )
-            except Exception:
-                st.error(
-                    "Não foi possível criar uma conversa."
-                )
-            else:
-                new_conversation_id = new_conversation["id"]
-
-                try:
-                    attachments = upload_chat_attachments(
-                        client=client,
-                        user_id=user_id,
-                        conversation_id=new_conversation_id,
-                        uploaded_files=uploaded_files,
-                    )
-                except ValueError as error:
-                    delete_conversation(
-                        client=client,
-                        conversation_id=new_conversation_id,
-                    )
-                    st.warning(str(error))
-                    return
-                except Exception:
-                    traceback.print_exc()
-                    delete_conversation(
-                        client=client,
-                        conversation_id=new_conversation_id,
-                    )
-                    st.error("Não foi possível enviar os arquivos.")
-                    return
-
-                # A pergunta é gravada ANTES de qualquer outra etapa: se a
-                # execução cair daqui em diante, ela não se perde.
-                turn = save_turn(
-                    client=client,
-                    conversation_id=new_conversation_id,
-                    prompt=prompt,
-                    attachments=attachments,
-                    new_conversation=True,
-                )
-
-                if turn is None:
-                    # Nada foi salvo: não deixa uma conversa vazia para trás.
-                    try:
-                        delete_conversation(
-                            client=client,
-                            conversation_id=new_conversation_id,
-                        )
-                    except Exception:
-                        traceback.print_exc()
-
-                    st.rerun()
-
-                st.session_state.selected_conversation_id = (
-                    new_conversation_id
-                )
-                st.session_state.new_conversation_mode = False
-                st.session_state.scroll_to_bottom = True
-
-                # Se o WebSocket cair durante a resposta, o recarregamento
-                # volta para esta conversa e mostra o turno salvo.
-                sync_selected_conversation()
-
-                display_user_message(
-                    prompt,
-                    client=client,
-                    attachments=attachments,
-                )
-
-                answer_turn(
-                    client=client,
-                    user_id=user_id,
-                    conversation_id=new_conversation_id,
-                    prompt=prompt,
-                    turn=turn,
-                    new_conversation=True,
-                )
-
+        show_chat_input("Digite sua mensagem...")
         return
 
     selected_conversation = next(
@@ -2727,16 +2819,19 @@ def show_authenticated_area() -> None:
     open_turn = find_open_turn(all_messages)
     messages = visible_messages(all_messages)
 
-    if has_older_messages and st.button(
-        "Carregar mensagens anteriores",
-        icon=":material/expand_less:",
-        key=f"older_messages_{selected_id}",
-        type="tertiary",
-    ):
-        st.session_state[message_window_key] = (
-            message_window + MESSAGES_PAGE_SIZE
+    if has_older_messages:
+        st.button(
+            "Carregar mensagens anteriores",
+            icon=":material/expand_less:",
+            key=f"older_messages_{selected_id}",
+            type="tertiary",
+            on_click=_increase_session_value,
+            args=(
+                message_window_key,
+                message_window,
+                MESSAGES_PAGE_SIZE,
+            ),
         )
-        st.rerun()
 
     if not messages:
         show_empty_conversation(flower_uri)
@@ -3015,7 +3110,6 @@ def show_authenticated_area() -> None:
     # Tentar novamente / Cancelar ficam ANTES do marcador de fim da conversa:
     # a rolagem para nele, e o que vem depois fica escondido atrás do campo.
     turn_running = False
-    retry_clicked = cancel_clicked = False
 
     if pending_offer is None and open_turn is not None:
         reply = open_turn["reply"]
@@ -3045,21 +3139,32 @@ def show_authenticated_area() -> None:
 
             retry_column, cancel_column = st.columns(2)
 
+            turn_button_args = (
+                user_id,
+                selected_id,
+                reply,
+                open_user_message,
+            )
+
             with retry_column:
-                retry_clicked = st.button(
+                st.button(
                     "Tentar novamente",
                     icon=":material/refresh:",
                     type="primary",
                     use_container_width=True,
                     key=f"retry_turn_{open_user_message['id']}",
+                    on_click=handle_turn_button,
+                    args=("retry", *turn_button_args),
                 )
 
             with cancel_column:
-                cancel_clicked = st.button(
+                st.button(
                     "Cancelar",
                     icon=":material/stop_circle:",
                     use_container_width=True,
                     key=f"cancel_turn_{open_user_message['id']}",
+                    on_click=handle_turn_button,
+                    args=("cancel", *turn_button_args),
                 )
 
     if messages:
@@ -3219,114 +3324,7 @@ def show_authenticated_area() -> None:
             )
             return
 
-        if retry_clicked or cancel_clicked:
-            log_event(
-                "[UI] clique_"
-                + ("tentar_novamente" if retry_clicked else "cancelar")
-                + f" pergunta={str(open_user_message['id'])[:8]}"
-            )
-
-            try:
-                # A nova tentativa e o cancelamento usam sempre o MESMO
-                # registro de resposta; só é criado se ainda não existir.
-                reply_id = (
-                    reply["id"]
-                    if reply is not None
-                    else reserve_reply(
-                        client=client,
-                        conversation_id=selected_id,
-                        user_message_id=open_user_message["id"],
-                    )["id"]
-                )
-            except Exception:
-                traceback.print_exc()
-                flash(
-                    "Não foi possível concluir a ação agora. Verifique a "
-                    "conexão e tente novamente.",
-                    kind="error",
-                )
-                st.rerun()
-
-            if retry_clicked:
-                started_job = start_turn_job(
-                    client=client,
-                    user_id=user_id,
-                    conversation_id=selected_id,
-                    reply_id=reply_id,
-                )
-                log_event(f"[UI] tentar_novamente iniciou={started_job}")
-                st.session_state.scroll_to_bottom = True
-                st.rerun()
-
-            try:
-                cancel_turn(
-                    client=client,
-                    reply_id=reply_id,
-                )
-            except Exception:
-                traceback.print_exc()
-                flash(
-                    "Não foi possível cancelar agora. Tente novamente.",
-                    kind="error",
-                )
-            else:
-                # O texto volta ao campo para a pessoa completar e reenviar.
-                restore_chat_input(str(open_user_message.get("content", "")))
-
-            st.rerun()
-
-    submission = show_chat_input("Digite sua mensagem...")
-    prompt, uploaded_files = parse_chat_submission(submission)
-
-    if prompt or uploaded_files:
-        if not prompt:
-            prompt = "Analise os arquivos anexados."
-
-        try:
-            attachments = upload_chat_attachments(
-                client=client,
-                user_id=user_id,
-                conversation_id=selected_id,
-                uploaded_files=uploaded_files,
-            )
-        except ValueError as error:
-            flash(str(error))
-            restore_chat_input(prompt)
-            st.rerun()
-        except Exception:
-            traceback.print_exc()
-            flash(
-                "Não foi possível enviar os arquivos. O texto voltou para "
-                "o campo de mensagem.",
-                kind="error",
-            )
-            restore_chat_input(prompt)
-            st.rerun()
-
-        # A pergunta é gravada ANTES de exibir ou chamar a IA.
-        turn = save_turn(
-            client=client,
-            conversation_id=selected_id,
-            prompt=prompt,
-            attachments=attachments,
-        )
-
-        if turn is None:
-            st.rerun()
-
-        display_user_message(
-            prompt,
-            client=client,
-            attachments=attachments,
-        )
-
-        answer_turn(
-            client=client,
-            user_id=user_id,
-            conversation_id=selected_id,
-            prompt=prompt,
-            turn=turn,
-        )
+    show_chat_input("Digite sua mensagem...")
 
 
 _run_started = time.perf_counter()

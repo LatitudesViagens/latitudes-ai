@@ -35,6 +35,14 @@ def _snippet_markdown(snippet: str) -> str:
     )
 
 
+def _choose_result(
+    on_select: Callable[[str], None],
+    conversation_id: str,
+) -> None:
+    st.session_state[CLEAR_SEARCH_KEY] = True
+    on_select(conversation_id)
+
+
 def _clear_search() -> None:
     st.session_state[SEARCH_INPUT_KEY] = ""
 
@@ -89,14 +97,14 @@ def show_conversation_search(
     for result in results:
         conversation_id = str(result["conversation_id"])
 
-        if st.button(
+        # on_click: o clique roda a tela uma vez só.
+        st.button(
             str(result.get("title") or "Conversa"),
             key=f"search_result_{conversation_id}",
             use_container_width=True,
-        ):
-            st.session_state[CLEAR_SEARCH_KEY] = True
-            on_select(conversation_id)
-            st.rerun()
+            on_click=_choose_result,
+            args=(on_select, conversation_id),
+        )
 
         snippet = _snippet_markdown(result.get("snippet", ""))
 
