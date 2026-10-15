@@ -6,8 +6,10 @@ from services.document_export import (
     export_docx,
     export_file_name,
     export_pdf,
+    export_pptx,
     export_xlsx,
     has_table,
+    looks_like_itinerary,
     remove_advice_sections,
 )
 
@@ -29,7 +31,8 @@ FILE_REQUESTED: ContextVar[bool] = ContextVar(
 
 FILE_REQUEST_PATTERN = re.compile(
     r"\b(?:pdf|docs?|docx|word|planilhas?|excel|xlsx|csv|arquivos?|"
-    r"documentos?|export\w*|baix\w*|download)\b",
+    r"documentos?|export\w*|baix\w*|download|slides?|pptx?|power\s?point|"
+    r"apresenta[çc](?:[ãa]o|[õo]es))\b",
     flags=re.IGNORECASE,
 )
 
@@ -60,6 +63,11 @@ FORMATS = {
         "text/csv",
         lambda content, title: export_csv(content),
     ),
+    "pptx": (
+        "application/vnd.openxmlformats-officedocument."
+        "presentationml.presentation",
+        lambda content, title: export_pptx(content, title),
+    ),
 }
 
 FORMAT_ALIASES = {
@@ -71,6 +79,13 @@ FORMAT_ALIASES = {
     "excel": "xlsx",
     "planilha": "xlsx",
     "xls": "xlsx",
+    "ppt": "pptx",
+    "powerpoint": "pptx",
+    "slides": "pptx",
+    "slide": "pptx",
+    "google slides": "pptx",
+    "apresentacao": "pptx",
+    "apresentação": "pptx",
 }
 
 
@@ -81,11 +96,13 @@ async def generate_document(
 ) -> dict:
     """Gera um arquivo com a identidade visual da Latitudes para o usuário baixar.
 
-    Use quando o usuário pedir um PDF, documento Word, planilha Excel ou CSV.
-    O arquivo aparece para o usuário logo abaixo da sua resposta.
+    Use quando o usuário pedir um PDF, documento Word, planilha Excel, CSV ou
+    slides (apresentação). O arquivo aparece para o usuário logo abaixo da
+    sua resposta.
 
     Args:
-        formato: "pdf", "docx" (Word), "xlsx" (planilha Excel) ou "csv".
+        formato: "pdf", "docx" (Word), "xlsx" (planilha Excel), "csv" ou
+            "pptx" (slides, abre no PowerPoint e no Google Slides).
         titulo: título curto do documento, por exemplo "Roteiro do Egito".
         conteudo: somente o roteiro (ou a tabela pedida) em Markdown, em tom
             de documento para o cliente: sem saudações, sem falar de si
@@ -93,6 +110,10 @@ async def generate_document(
             dicas, notas ou fontes, que ficam na conversa.
             Para "xlsx" e "csv", inclua uma ou mais tabelas em Markdown com
             linha de cabeçalho; cada tabela vira uma aba da planilha.
+            Para "pptx", cada título "##" vira um slide: escreva de 3 a 6
+            tópicos curtos por slide (frases de uma linha, não parágrafos);
+            um título "#" sem texto abaixo vira slide de seção; tabelas
+            ganham slide próprio. A capa é criada a partir do título.
     """
     collector = GENERATED_FILES.get()
 
@@ -125,12 +146,17 @@ async def generate_document(
     if format_key not in FORMATS:
         return {
             "status": "erro",
-            "mensagem": "Formato inválido. Use pdf, docx, xlsx ou csv.",
+            "mensagem": "Formato inválido. Use pdf, docx, xlsx, csv ou pptx.",
         }
 
     clean_title = " ".join(str(titulo).split())[:120] or "Documento Latitudes"
-    # O documento leva só o roteiro; recomendações ficam na conversa.
-    clean_content = remove_advice_sections(str(conteudo).strip())
+    clean_content = str(conteudo).strip()
+
+    # O documento leva só o roteiro; recomendações ficam na conversa. Slides
+    # que não são roteiro (uma apresentação de trabalho) mantêm "Próximos
+    # passos", "Considerações" e afins, que fazem parte da apresentação.
+    if format_key != "pptx" or looks_like_itinerary(clean_content):
+        clean_content = remove_advice_sections(clean_content)
 
     if not clean_content:
         return {

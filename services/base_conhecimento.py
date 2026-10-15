@@ -12,12 +12,14 @@ impede uma resposta.
 
 from dataclasses import dataclass
 import os
+import json
+import math
 import threading
 import time
 
 from supabase import Client
 
-from database.knowledge_entries import has_approved_entries, match_entries
+from database.knowledge_entries import has_approved_entries, list_approved_embeddings, match_entries
 from services.embeddings import embed_text, vector_literal
 
 # Calibrados com text-embedding-3-small (768): mesma pergunta com outra
@@ -123,31 +125,148 @@ def _base_has_entries(client: Client) -> bool:
     return has_entries
 
 
+def base_known_empty() -> bool:
+    """True só se a última conferência (até 60 s atrás) achou a base vazia:
+    aí nem vale calcular o embedding da pergunta."""
+    with _base_state_lock:
+        return (
+            _base_state is not None
+            and time.monotonic() - _base_state[0] < EMPTY_BASE_CHECK_SECONDS
+            and not _base_state[1]
+        )
+
+
+def prefetch_question_embedding(question: str) -> tuple[list[float] | None, list]:
+    """Embedding da pergunta calculado já no início da tarefa, em paralelo com
+    a conexão e a leitura da conversa (antes era calculado só depois delas).
+    Devolve (embedding ou None, usos para o registro de custo). Nunca lança
+    erro: sem embedding, a consulta à base calcula de novo."""
+    from services.custos import collect_usage
+
+    try:
+        with collect_usage() as usages:
+            embedding = embed_text(question)
+
+        return embedding, list(usages)
+    except Exception as error:
+        print(f"[BASE] Cálculo antecipado falhou ({type(error).__name__}).", flush=True)
+        return None, []
+
+
 def forget_base_state() -> None:
     """Chamada quando o TI muda a base: a próxima pergunta confere de novo."""
-    global _base_state
+    global _base_state, _entries_cache
 
     with _base_state_lock:
         _base_state = None
+        _entries_cache = None
+
+
+# Respostas aprovadas na memória do servidor: lidas do banco no máximo a cada
+# 10 minutos. Toda mudança do TI (incluir, aprovar, editar, retirar) já limpa a
+# lista na hora (admin/base_conhecimento.py → forget_base_state). Antes, cada pergunta fazia
+# uma consulta ao banco para comparar (0,6 a 1,7 s medidos em 13/10/2026).
+_entries_cache: tuple[float, list[tuple[str, str, str, list[float], float]]] | None = None
+ENTRIES_CACHE_SECONDS = 600
+
+
+def _parse_vector(value) -> list[float] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+
+    if not isinstance(value, list) or not value:
+        return None
+
+    try:
+        return [float(number) for number in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _approved_entries(client: Client) -> list[tuple[str, str, str, list[float], float]]:
+    """(id, pergunta, resposta, vetor, norma) das respostas aprovadas."""
+    global _entries_cache, _base_state
+
+    with _base_state_lock:
+        if _entries_cache is not None and time.monotonic() - _entries_cache[0] < ENTRIES_CACHE_SECONDS:
+            return _entries_cache[1]
+
+    entries = []
+
+    for row in list_approved_embeddings(client):
+        vector = _parse_vector(row.get("embedding"))
+
+        if vector is None:
+            continue
+
+        norm = math.sqrt(sum(number * number for number in vector))
+
+        if norm > 0:
+            entries.append((str(row["id"]), str(row.get("question", "")), str(row.get("answer", "")), vector, norm))
+
+    with _base_state_lock:
+        _entries_cache = (time.monotonic(), entries)
+        _base_state = (time.monotonic(), bool(entries))
+
+    return entries
+
+
+def _best_match(
+    entries: list[tuple[str, str, str, list[float], float]],
+    embedding: list[float],
+) -> tuple[tuple, float] | None:
+    """Mesma conta do banco (1 - distância de cosseno do pgvector)."""
+    query_norm = math.sqrt(sum(number * number for number in embedding))
+
+    if query_norm == 0:
+        return None
+
+    best = None
+
+    for entry in entries:
+        vector, norm = entry[3], entry[4]
+
+        if len(vector) != len(embedding):
+            continue
+
+        similarity = sum(a * b for a, b in zip(vector, embedding)) / (norm * query_norm)
+
+        if best is None or similarity > best[1]:
+            best = (entry, similarity)
+
+    return best
 
 
 def find_knowledge_match(
     client: Client,
     question: str,
     first_question: bool,
+    embedding: list[float] | None = None,
 ) -> KnowledgeMatch | None:
     if not question.strip():
         return None
 
     try:
-        if not _base_has_entries(client):
+        started = time.perf_counter()
+        entries = _approved_entries(client)
+        loaded = time.perf_counter()
+
+        if not entries:
             return None
 
-        embedding = embed_text(question)
-        matches = match_entries(
-            client=client,
-            embedding=vector_literal(embedding),
-            match_count=1,
+        if embedding is None:
+            embedding = embed_text(question)
+
+        embedded = time.perf_counter()
+        found = _best_match(entries, embedding)
+        print(
+            f"[BASE] tempos respostas_aprovadas={loaded - started:.2f}s "
+            f"embedding={embedded - loaded:.2f}s "
+            f"comparacao={time.perf_counter() - embedded:.3f}s ({len(entries)} respostas)",
+            flush=True,
         )
     except Exception as error:
         print(
@@ -157,11 +276,11 @@ def find_knowledge_match(
         )
         return None
 
-    if not matches:
+    if found is None:
         return None
 
-    best = matches[0]
-    similarity = float(best.get("similarity") or 0)
+    entry, similarity = found
+    best = {"id": entry[0], "question": entry[1], "answer": entry[2]}
     mode = classify(
         similarity=similarity,
         first_question=first_question,

@@ -160,6 +160,19 @@ def has_approved_entries(client: Client) -> bool:
     return bool(response.data)
 
 
+def list_approved_embeddings(client: Client) -> list[dict]:
+    """Respostas aprovadas com o embedding, para comparar na memória do
+    servidor (services/base_conhecimento.py) sem ir ao banco a cada pergunta."""
+    response = (
+        client.table("knowledge_entries")
+        .select("id,question,answer,embedding")
+        .eq("status", STATUS_APPROVED)
+        .limit(2000)
+        .execute()
+    )
+    return response.data or []
+
+
 def match_entries(
     client: Client,
     embedding: str,

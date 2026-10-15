@@ -58,6 +58,7 @@ from database.conversations import (
     set_conversation_visibility,
 )
 from database.messages import add_message, list_messages
+from database.client import keep_connection_alive
 from database.shared_itineraries import (
     find_shared_itineraries_for_message,
     get_shared_itinerary,
@@ -78,6 +79,7 @@ from services.chat_service import (
 from services.turn_worker import (
     cancel_turn_job,
     is_running as is_turn_job_running,
+    partial_text as turn_partial_text,
     start_turn_job,
 )
 from database.messages import (
@@ -1417,6 +1419,87 @@ def show_empty_conversation(flower_uri: str) -> None:
     )
 
 
+# Selo do cartão de anexo: (texto, classe da cor), pela extensão do arquivo.
+ATTACHMENT_BADGES = {
+    "pdf": ("PDF", "pdf"),
+    "docx": ("DOC", "doc"),
+    "doc": ("DOC", "doc"),
+    "xlsx": ("XLS", "xls"),
+    "xls": ("XLS", "xls"),
+    "csv": ("CSV", "xls"),
+    "pptx": ("PPT", "ppt"),
+    "txt": ("TXT", "txt"),
+}
+
+
+def _format_size(size) -> str:
+    try:
+        size = int(size or 0)
+    except (TypeError, ValueError):
+        return ""
+
+    if size <= 0:
+        return ""
+
+    if size < 1024 * 1024:
+        return f"{max(1, round(size / 1024))} KB"
+
+    return f"{size / (1024 * 1024):.1f} MB".replace(".", ",")
+
+
+def show_attachment_card(
+    name: str,
+    mime_type: str,
+    size,
+    path: str,
+    load_file,
+) -> None:
+    """Anexo como cartão (selo do tipo, nome, tipo · tamanho e baixar), como
+    no ChatGPT e no Claude; antes era uma linha "📎 nome" solta no balão."""
+    import hashlib
+
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    badge_text, badge_class = ATTACHMENT_BADGES.get(
+        extension,
+        ((extension[:4] or "ARQ").upper(), "txt"),
+    )
+    details = " · ".join(part for part in (badge_text, _format_size(size)) if part)
+    card_key = "attach_card_" + hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
+
+    with st.container(key=card_key):
+        badge_column, info_column, button_column = st.columns(
+            [1, 6, 1],
+            gap="small",
+            vertical_alignment="center",
+        )
+
+        with badge_column:
+            st.html(
+                f'<div class="file-badge file-badge-{badge_class}">'
+                f"{escape(badge_text)}</div>"
+            )
+
+        with info_column:
+            st.html(
+                f'<div class="file-name" title="{escape(name)}">{escape(name)}</div>'
+                f'<div class="file-details">{escape(details)}</div>'
+            )
+
+        with button_column:
+            # O arquivo só é baixado do Storage quando a pessoa clica.
+            st.download_button(
+                label="",
+                data=load_file,
+                file_name=name,
+                mime=mime_type,
+                icon=":material/download:",
+                key=f"download_{path}",
+                on_click="ignore",
+                type="tertiary",
+                help="Baixar o arquivo",
+            )
+
+
 def display_message_attachments(
     client,
     attachments: list[dict] | None,
@@ -1436,14 +1519,12 @@ def display_message_attachments(
                     attachment=attachment,
                 )
 
-            st.download_button(
-                label=f"📎 {name}",
-                data=load_file,
-                file_name=name,
-                mime=mime_type,
-                key=f"download_{attachment.get('path', name)}",
-                on_click="ignore",
-                type="tertiary",
+            show_attachment_card(
+                name=name,
+                mime_type=mime_type,
+                size=attachment.get("size"),
+                path=str(attachment.get("path", name)),
+                load_file=load_file,
             )
             continue
 
@@ -1499,6 +1580,10 @@ GENERATED_FILE_LABELS = {
         "spreadsheetml.sheet"
     ): ("Planilha Excel", ":material/table_view:"),
     "text/csv": ("Arquivo CSV", ":material/csv:"),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "presentationml.presentation"
+    ): ("Slides", ":material/slideshow:"),
 }
 
 
@@ -1848,7 +1933,7 @@ def _build_shared_itinerary_context(itinerary: dict) -> str:
 # Intervalo para conferir se a resposta em segundo plano terminou. A checagem
 # é feita na memória do servidor (instantânea); o banco só é consultado
 # quando a tarefa não está neste processo (ex.: servidor reiniciado).
-RUNNING_TURN_POLL_SECONDS = 1
+RUNNING_TURN_POLL_SECONDS = 0.5
 # Cada clique refaz a tela inteira: o trabalho por clique precisa ser o mesmo
 # para quem tem 5 ou 500 conversas. O restante aparece por "Mostrar mais" ou
 # pela busca.
@@ -1882,6 +1967,57 @@ PREPARING_RESPONSE_HTML = """
     <span class="latitudes-streaming-cursor">▌</span>
 </div>
 """
+
+
+STREAMING_POLL_SECONDS = 0.5
+
+
+@st.fragment(run_every=STREAMING_POLL_SECONDS)
+def streaming_reply(reply_id: str) -> None:
+    """Balão da resposta em andamento: "Preparando a resposta" e, assim que a
+    IA termina, o texto dela (lido da memória da tarefa,
+    services/turn_worker.partial_text), sem esperar a gravação no banco e o
+    redesenho da tela, que somavam 1 a 2 s."""
+    state_key = f"_partial_reply_{reply_id}"
+    text = turn_partial_text(reply_id)
+
+    if text:
+        st.session_state[state_key] = text
+    else:
+        # Entre o fim da tarefa e a tela mostrar a resposta final, mantém o
+        # último texto em vez de voltar para "Preparando a resposta".
+        text = st.session_state.get(state_key, "")
+
+    if not text:
+        st.html(PREPARING_RESPONSE_HTML)
+        return
+
+    body, _sources = split_sources_footer(text)
+    st.markdown(escape_dollar_signs(body))
+
+    # Acompanha o fim do texto só se a pessoa estiver perto do fim da página
+    # (se ela rolou para cima para ler, não puxa a tela).
+    st.html(
+        f"""
+        <script>
+        /* {len(text)} */
+        (() => {{
+            const doc = window.parent.document;
+            const target = doc.getElementById("latitudes-chat-bottom");
+            if (!target) return;
+            const bar = doc.querySelector('[data-testid="stBottom"]');
+            const barHeight = bar ? bar.getBoundingClientRect().height : 0;
+            const view = window.parent.innerHeight;
+            const distance = target.getBoundingClientRect().top - (view - barHeight);
+            if (distance < 260) {{
+                target.style.scrollMarginBottom = (barHeight + 24) + "px";
+                target.scrollIntoView({{ behavior: "instant", block: "end" }});
+            }}
+        }})();
+        </script>
+        """,
+        unsafe_allow_javascript=True,
+    )
 
 
 @st.fragment(run_every=RUNNING_TURN_POLL_SECONDS)
@@ -2013,6 +2149,8 @@ def answer_turn(
             user_id=user_id,
             conversation_id=conversation_id,
             reply_id=reply_id,
+            # A consulta à base já começa com o texto da pergunta.
+            question=prompt,
         )
 
     st.session_state.scroll_to_bottom = True
@@ -2138,6 +2276,7 @@ def answer_shared_choice(
             user_id=user_id,
             conversation_id=conversation_id,
             reply_id=turn["reply"]["id"],
+            question=choice_prompt,
         )
 
     st.session_state.scroll_to_bottom = True
@@ -2198,6 +2337,7 @@ def handle_turn_button(
             user_id=user_id,
             conversation_id=conversation_id,
             reply_id=reply_id,
+            question=str(user_message.get("content", "")),
         )
         log_event(f"[UI] tentar_novamente iniciou={started_job}")
 
@@ -2296,6 +2436,8 @@ def apply_conversation_list_action(client) -> None:
 def show_authenticated_area() -> None:
     client = st.session_state.client
     user_id = st.session_state.user_id
+    # Conexão com o banco aberta por mais tempo entre os cliques.
+    keep_connection_alive(client)
     flower_uri = get_flower_data_uri()
 
     st.html(
@@ -2879,9 +3021,9 @@ def show_authenticated_area() -> None:
                     continue
 
                 if status != STATUS_DONE:
-                    # Resposta em andamento: o acompanhamento fica junto do
-                    # botão Parar (running_turn_controls), no rodapé.
-                    st.html(PREPARING_RESPONSE_HTML)
+                    # Resposta em andamento: o texto aparece enquanto a IA
+                    # escreve; o fim é percebido por running_turn_controls.
+                    streaming_reply(str(message["id"]))
                     continue
 
                 body, sources_footer = split_sources_footer(content)

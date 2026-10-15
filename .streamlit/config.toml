@@ -17,3 +17,12 @@ enableWebsocketCompression = true
 
 [browser]
 gatherUsageStats = false
+
+[runner]
+# O Streamlit fazia uma varredura completa da memória (gc.collect) depois de
+# CADA execução da tela, inclusive das conferências automáticas da resposta.
+# Com a IA carregada (milhões de objetos), isso custava ~0,3 s de processador
+# por clique e travava todos os usuários. Teste de carga (13/10/2026, 25
+# pessoas ativas): clique 5,9 s → 0,10 s, processador 90% → 10%, sem aumento
+# de memória. O Python continua limpando a memória sozinho, no ritmo normal.
+postScriptGC = false

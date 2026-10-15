@@ -1,4 +1,4 @@
-"""Exporta respostas da ÁGORA (Markdown) para PDF, Word, Excel e CSV.
+"""Exporta respostas da ÁGORA (Markdown) para PDF, Word, Excel, CSV e slides.
 
 Os documentos levam a identidade visual da Latitudes. A conversão é feita
 localmente, sem chamar modelos de IA.
@@ -23,6 +23,12 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XlsxImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from PIL import Image as PilImage
+from pptx import Presentation
+from pptx.dml.color import RGBColor as PptxColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR
+from pptx.util import Inches
+from pptx.util import Pt as PptxPt
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -897,3 +903,439 @@ def export_csv(content: str) -> bytes:
         writer.writerows(rows)
 
     return output.getvalue().encode("utf-8-sig")
+
+
+# --------------------------------------------------------------------------
+# Slides (python-pptx) — abre no PowerPoint, Google Slides e Keynote
+# --------------------------------------------------------------------------
+
+SLIDE_WIDTH = Inches(13.333)
+SLIDE_HEIGHT = Inches(7.5)
+SLIDE_MARGIN = Inches(0.7)
+SLIDE_BODY_TOP = Inches(1.75)
+SLIDE_BODY_HEIGHT = Inches(5.0)
+SLIDE_BODY_SIZE = 18
+# Quanto texto cabe num slide: linhas de ~85 caracteres no corpo em 18 pt.
+SLIDE_CHARS_PER_LINE = 85
+SLIDE_MAX_LINES = 11
+SLIDE_MAX_TABLE_ROWS = 8
+
+
+@dataclass
+class _Slide:
+    kind: str
+    title: str
+    blocks: list[Block] = field(default_factory=list)
+
+
+def _block_lines(block: Block) -> int:
+    if block.kind == "code":
+        return max(1, len(block.text.splitlines()))
+
+    text = _plain_text(block.runs)
+    width = SLIDE_CHARS_PER_LINE - block.depth * 6
+    return max(1, -(-len(text) // max(width, 20)))
+
+
+def _plan_slides(blocks: list[Block], title: str) -> list[_Slide]:
+    """Divide o Markdown em slides: cada título (# ou ##) abre um slide,
+    tabelas vão para slides próprios e o texto que não cabe continua num
+    slide "(cont.)"."""
+    slides: list[_Slide] = []
+    current_title = title
+    current: _Slide | None = None
+    used_lines = 0
+
+    def new_slide(slide_title: str) -> _Slide:
+        nonlocal used_lines
+        slide = _Slide("content", slide_title)
+        slides.append(slide)
+        used_lines = 0
+        return slide
+
+    for index, block in enumerate(blocks):
+        if block.kind == "heading" and block.level <= 2:
+            current_title = _plain_text(block.runs) or current_title
+            following = blocks[index + 1] if index + 1 < len(blocks) else None
+            # Título seguido de outro título de slide (ou do fim): seção.
+            if following is None or (
+                following.kind == "heading" and following.level <= 2
+            ):
+                slides.append(_Slide("section", current_title))
+
+            # O slide só é criado quando aparece texto (tabelas têm o seu).
+            current = None
+            continue
+
+        if block.kind == "rule":
+            # "---" separa slides, como nas apresentações em Markdown.
+            current = None
+            continue
+
+        if block.kind == "table":
+            header, *rows = block.rows
+
+            for start in range(0, max(len(rows), 1), SLIDE_MAX_TABLE_ROWS):
+                part = Block(
+                    "table",
+                    rows=[header, *rows[start : start + SLIDE_MAX_TABLE_ROWS]],
+                )
+                suffix = " (cont.)" if start else ""
+                slides.append(_Slide("table", current_title + suffix, [part]))
+
+            current = None
+            continue
+
+        lines = _block_lines(block) + (1 if block.kind == "heading" else 0)
+
+        if current is None:
+            current = new_slide(current_title)
+        elif used_lines and used_lines + lines > SLIDE_MAX_LINES:
+            current = new_slide(f"{current_title} (cont.)")
+
+        current.blocks.append(block)
+        used_lines += lines
+
+    return slides
+
+
+def _pptx_color(value: str) -> PptxColor:
+    return PptxColor.from_string(value)
+
+
+def _pptx_fill(shape, color: str) -> None:
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = _pptx_color(color)
+    shape.line.fill.background()
+    shape.shadow.inherit = False
+
+
+def _pptx_background(slide, color: str) -> None:
+    background = slide.background.fill
+    background.solid()
+    background.fore_color.rgb = _pptx_color(color)
+
+
+def _pptx_text_box(slide, left, top, width, height):
+    box = slide.shapes.add_textbox(left, top, width, height)
+    frame = box.text_frame
+    frame.word_wrap = True
+    frame.margin_left = frame.margin_right = 0
+    return frame
+
+
+def _pptx_add_runs(
+    paragraph,
+    runs: list[Run],
+    size: float,
+    color: str,
+    bold: bool = False,
+) -> None:
+    for run in runs:
+        pptx_run = paragraph.add_run()
+        pptx_run.text = run.text
+        font = pptx_run.font
+        font.name = "Arial"
+        font.size = PptxPt(size)
+        font.bold = bold or run.bold
+        font.italic = run.italic
+        font.color.rgb = _pptx_color(OLIVE_DARK if run.link else color)
+
+        if run.link:
+            pptx_run.hyperlink.address = run.link
+
+
+def _pptx_logo(slide, width, left, top) -> None:
+    slide.shapes.add_picture(str(LOGO_FILE), left, top, width=width)
+
+
+def _pptx_footer(slide, number: int) -> None:
+    _pptx_logo(
+        slide,
+        width=Inches(1.3),
+        left=SLIDE_WIDTH - SLIDE_MARGIN - Inches(1.3),
+        top=SLIDE_HEIGHT - Inches(0.6),
+    )
+    frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=SLIDE_HEIGHT - Inches(0.55),
+        width=Inches(1),
+        height=Inches(0.3),
+    )
+    run = frame.paragraphs[0].add_run()
+    run.text = str(number)
+    run.font.name = "Arial"
+    run.font.size = PptxPt(10)
+    run.font.color.rgb = _pptx_color(MUTED)
+
+
+def _pptx_slide_title(slide, title: str) -> None:
+    frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=Inches(0.55),
+        width=SLIDE_WIDTH - 2 * SLIDE_MARGIN,
+        height=Inches(0.9),
+    )
+    frame.vertical_anchor = MSO_ANCHOR.BOTTOM
+    run = frame.paragraphs[0].add_run()
+    run.text = title
+    run.font.name = "Georgia"
+    run.font.size = PptxPt(30 if len(title) <= 60 else 24)
+    run.font.bold = True
+    run.font.color.rgb = _pptx_color(OLIVE_DARK)
+
+    accent = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        SLIDE_MARGIN,
+        Inches(1.5),
+        Inches(1.2),
+        Inches(0.06),
+    )
+    _pptx_fill(accent, GOLD)
+
+
+SLIDE_MAX_SUBTITLE = 220
+
+
+def _cover_subtitle(blocks: list[Block]) -> tuple[str, list[Block]]:
+    """Texto curto antes do primeiro título vira subtítulo da capa, em vez
+    de ganhar um slide só para ele."""
+    leading = []
+
+    for block in blocks:
+        if block.kind != "paragraph":
+            break
+        leading.append(block)
+
+    subtitle = " ".join(_plain_text(block.runs) for block in leading)
+
+    if not leading or len(subtitle) > SLIDE_MAX_SUBTITLE:
+        return "", blocks
+
+    return subtitle, blocks[len(leading):]
+
+
+def _pptx_cover(presentation, title: str, subtitle: str = "") -> None:
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    _pptx_background(slide, IVORY)
+
+    band = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        0,
+        SLIDE_HEIGHT - Inches(0.35),
+        SLIDE_WIDTH,
+        Inches(0.35),
+    )
+    _pptx_fill(band, OLIVE)
+
+    _pptx_logo(
+        slide,
+        width=Inches(2.6),
+        left=SLIDE_MARGIN,
+        top=Inches(0.6),
+    )
+
+    frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=Inches(2.4),
+        width=SLIDE_WIDTH - 2 * SLIDE_MARGIN,
+        height=Inches(2.6),
+    )
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    run = frame.paragraphs[0].add_run()
+    run.text = title
+    run.font.name = "Georgia"
+    run.font.size = PptxPt(44 if len(title) <= 50 else 34)
+    run.font.bold = True
+    run.font.color.rgb = _pptx_color(OLIVE_DARK)
+
+    if subtitle:
+        paragraph = frame.add_paragraph()
+        paragraph.space_before = PptxPt(14)
+        subtitle_run = paragraph.add_run()
+        subtitle_run.text = subtitle
+        subtitle_run.font.name = "Arial"
+        subtitle_run.font.size = PptxPt(20)
+        subtitle_run.font.color.rgb = _pptx_color(OLIVE)
+
+    accent = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        SLIDE_MARGIN,
+        Inches(5.15),
+        Inches(1.6),
+        Inches(0.08),
+    )
+    _pptx_fill(accent, GOLD)
+
+    date_frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=Inches(5.4),
+        width=Inches(6),
+        height=Inches(0.4),
+    )
+    date_run = date_frame.paragraphs[0].add_run()
+    date_run.text = _today()
+    date_run.font.name = "Arial"
+    date_run.font.size = PptxPt(14)
+    date_run.font.color.rgb = _pptx_color(MUTED)
+
+
+def _pptx_section(slide, title: str) -> None:
+    _pptx_background(slide, OLIVE)
+    frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=Inches(2.5),
+        width=SLIDE_WIDTH - 2 * SLIDE_MARGIN,
+        height=Inches(2.5),
+    )
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    run = frame.paragraphs[0].add_run()
+    run.text = title
+    run.font.name = "Georgia"
+    run.font.size = PptxPt(40)
+    run.font.bold = True
+    run.font.color.rgb = _pptx_color("FFFFFF")
+
+    accent = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        SLIDE_MARGIN,
+        Inches(5.1),
+        Inches(1.6),
+        Inches(0.08),
+    )
+    _pptx_fill(accent, GOLD)
+
+
+def _pptx_body(slide, blocks: list[Block]) -> None:
+    frame = _pptx_text_box(
+        slide,
+        left=SLIDE_MARGIN,
+        top=SLIDE_BODY_TOP,
+        width=SLIDE_WIDTH - 2 * SLIDE_MARGIN,
+        height=SLIDE_BODY_HEIGHT,
+    )
+    first = True
+
+    for block in blocks:
+        paragraph = frame.paragraphs[0] if first else frame.add_paragraph()
+        first = False
+        paragraph.space_after = PptxPt(8)
+
+        if block.kind == "heading":
+            paragraph.space_before = PptxPt(6)
+            _pptx_add_runs(
+                paragraph,
+                block.runs,
+                size=SLIDE_BODY_SIZE + 2,
+                color=OLIVE,
+                bold=True,
+            )
+        elif block.kind == "list_item":
+            marker = block.marker or ""
+            # Listas numeradas precisam de mais espaço para "10." e "11.".
+            hanging = 0.3 if marker in {"", "•"} else 0.5
+            indent = hanging + 0.05 + block.depth * 0.4
+            properties = paragraph._p.get_or_add_pPr()
+            properties.set("marL", str(int(Inches(indent))))
+            properties.set("indent", str(int(-Inches(hanging))))
+            marker_run = paragraph.add_run()
+            marker_run.text = f"{marker}\t" if marker else "\t"
+            marker_run.font.name = "Arial"
+            marker_run.font.size = PptxPt(SLIDE_BODY_SIZE)
+            marker_run.font.bold = True
+            marker_run.font.color.rgb = _pptx_color(GOLD if marker == "•" else OLIVE)
+            _pptx_add_runs(
+                paragraph,
+                block.runs,
+                size=SLIDE_BODY_SIZE - 2 * min(block.depth, 1),
+                color=TEXT,
+            )
+        elif block.kind == "code":
+            run = paragraph.add_run()
+            run.text = block.text
+            run.font.name = "Consolas"
+            run.font.size = PptxPt(14)
+            run.font.color.rgb = _pptx_color(TEXT)
+        else:
+            _pptx_add_runs(
+                paragraph,
+                block.runs,
+                size=SLIDE_BODY_SIZE,
+                color=TEXT,
+            )
+
+
+def _pptx_table(slide, block: Block) -> None:
+    column_count = max(len(row) for row in block.rows)
+    font_size = 14 if column_count <= 4 else 12 if column_count <= 6 else 10
+    row_height = Inches(0.5)
+    shape = slide.shapes.add_table(
+        len(block.rows),
+        column_count,
+        SLIDE_MARGIN,
+        SLIDE_BODY_TOP,
+        SLIDE_WIDTH - 2 * SLIDE_MARGIN,
+        row_height * len(block.rows),
+    )
+    table = shape.table
+
+    for row_index, row in enumerate(block.rows):
+        for column_index in range(column_count):
+            cell = table.cell(row_index, column_index)
+            cell.margin_left = cell.margin_right = Inches(0.1)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.fill.solid()
+
+            if row_index == 0:
+                cell.fill.fore_color.rgb = _pptx_color(OLIVE)
+            elif row_index % 2 == 0:
+                cell.fill.fore_color.rgb = _pptx_color(IVORY)
+            else:
+                cell.fill.fore_color.rgb = _pptx_color("FFFFFF")
+
+            paragraph = cell.text_frame.paragraphs[0]
+            runs = row[column_index] if column_index < len(row) else []
+            _pptx_add_runs(
+                paragraph,
+                runs,
+                size=font_size,
+                color="FFFFFF" if row_index == 0 else TEXT,
+                bold=row_index == 0,
+            )
+
+
+def export_pptx(content: str, title: str) -> bytes:
+    presentation = Presentation()
+    presentation.slide_width = SLIDE_WIDTH
+    presentation.slide_height = SLIDE_HEIGHT
+    blank = presentation.slide_layouts[6]
+
+    title, blocks = _split_title(parse_markdown(content), title)
+    subtitle, blocks = _cover_subtitle(blocks)
+    _pptx_cover(presentation, title, subtitle)
+
+    for number, plan in enumerate(_plan_slides(blocks, title), start=2):
+        slide = presentation.slides.add_slide(blank)
+
+        if plan.kind == "section":
+            _pptx_section(slide, plan.title)
+            continue
+
+        _pptx_background(slide, "FFFFFF")
+        _pptx_slide_title(slide, plan.title)
+
+        if plan.kind == "table":
+            _pptx_table(slide, plan.blocks[0])
+        else:
+            _pptx_body(slide, plan.blocks)
+
+        _pptx_footer(slide, number)
+
+    buffer = BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()

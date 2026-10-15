@@ -188,6 +188,81 @@ def response_cost_usd(response) -> float | None:
         return None
 
 
+# --- Preços do OpenRouter (respostas em pedaços) ------------------------------
+# Com a resposta aparecendo enquanto é escrita, o LiteLLM não repassa o custo
+# que o OpenRouter informa (só os tokens). O custo é calculado pelos tokens
+# com a tabela pública de preços, consultada uma vez por dia.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_PRICES_SECONDS = 24 * 60 * 60
+
+_prices_lock = threading.Lock()
+_prices: tuple[float, dict[str, tuple[float, float]]] | None = None
+
+
+def _openrouter_prices() -> dict[str, tuple[float, float]]:
+    """{modelo: (US$ por token de entrada, US$ por token de saída)}."""
+    global _prices
+
+    with _prices_lock:
+        if _prices is not None and time.monotonic() - _prices[0] < OPENROUTER_PRICES_SECONDS:
+            return _prices[1]
+
+    prices: dict[str, tuple[float, float]] = {}
+
+    try:
+        response = httpx.get(OPENROUTER_MODELS_URL, timeout=10)
+        response.raise_for_status()
+
+        for model in response.json().get("data") or []:
+            pricing = model.get("pricing") or {}
+
+            try:
+                prices[str(model["id"])] = (
+                    float(pricing["prompt"]),
+                    float(pricing["completion"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+    except Exception as error:
+        print(f"[CUSTOS] Tabela de preços indisponível ({type(error).__name__}).", flush=True)
+
+        with _prices_lock:
+            # Sem tabela: tenta de novo na próxima resposta (não guarda o vazio).
+            return _prices[1] if _prices is not None else {}
+
+    with _prices_lock:
+        _prices = (time.monotonic(), prices)
+
+    return prices
+
+
+def estimate_openrouter_cost(
+    model: str,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> float | None:
+    """Custo em US$ pelos tokens; None se faltar o modelo ou os tokens."""
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+
+    price = _openrouter_prices().get(str(model).removeprefix("openrouter/"))
+
+    if price is None:
+        return None
+
+    return prompt_tokens * price[0] + completion_tokens * price[1]
+
+
+def add_estimated_cost(cost: float | None) -> None:
+    """Soma um custo calculado ao uso da tentativa em andamento."""
+    usage = _ATTEMPT_USAGE.get()
+
+    if usage is None or cost is None:
+        return
+
+    usage["cost_usd"] = usage.get("cost_usd", 0.0) + cost
+
+
 # --- Custo das respostas do agente -------------------------------------------
 # agent_runner aponta esta variável para o dicionário de uso da tentativa; o
 # cliente do LiteLLM (services/llm_cost_client.py) soma o custo de cada

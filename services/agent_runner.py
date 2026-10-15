@@ -321,7 +321,8 @@ def _classify_error(error: BaseException) -> str:
 
 
 _FILE_MENTION = re.compile(
-    r"arquivo|download|baixar|pdf|planilha|documento|word|excel|csv",
+    r"arquivo|download|baixar|pdf|planilha|documento|word|excel|csv|slides?|"
+    r"apresenta[çc][ãa]o",
     flags=re.IGNORECASE,
 )
 
@@ -339,7 +340,8 @@ def _fix_file_position(content: str) -> str:
 
 
 _FALSE_FILE_CLAIM = re.compile(
-    r"[^.!?\n]*\b(?:arquivo|pdf|documento|planilha|word|docs?|csv|excel)"
+    r"[^.!?\n]*\b(?:arquivo|pdf|documento|planilha|word|docs?|csv|excel|"
+    r"slides?|apresenta[çc][ãa]o)"
     r"\b[^.!?\n]*"
     r"(?:est[áa]|ficou|foi)\s+(?:pronto|pronta|dispon[íi]vel|gerad[oa])"
     r"[^.!?\n]*(?:abaixo|acima|download|baixar)[^.!?\n]*[.!?]?",
@@ -347,7 +349,7 @@ _FALSE_FILE_CLAIM = re.compile(
 )
 FILE_NOT_GENERATED_NOTE = (
     "_Não consegui gerar o arquivo desta vez. Peça novamente indicando o "
-    "formato: PDF, Word, Excel ou CSV._"
+    "formato: PDF, Word, Excel, CSV ou slides._"
 )
 
 
@@ -539,9 +541,11 @@ async def _stream_agent_attempt(
         parts=user_parts,
     )
 
-    # O streaming SSE do provedor pode cair no meio de chamadas com anexos.
-    # Para conteúdo multimodal, aguardamos a resposta completa do provedor e
-    # depois a exibimos progressivamente no Streamlit.
+    # Resposta inteira de uma vez. Medido em 13/10/2026: em pedaços (SSE)
+    # o total ficava 0,7–1,8 s mais lento e quase não aparecia texto aos
+    # poucos, porque o modelo escreve tudo em ~1 s (a demora é pensar e
+    # pesquisar). Com anexos, o modo em pedaços ainda caía no provedor. A tela
+    # mostra a resposta assim que a tentativa termina (progress_listener).
     streaming_mode = StreamingMode.NONE
 
     run_config = RunConfig(streaming_mode=streaming_mode)
@@ -612,6 +616,59 @@ async def _stream_agent_attempt(
         )
 
 
+async def warm_up_pipeline() -> float:
+    """Roda o caminho completo do agente com uma resposta SIMULADA do LiteLLM
+    (mock_response: não chama o OpenRouter nem custa nada). O ADK e o LiteLLM
+    só importam boa parte do código na 1ª resposta; medido em 13/10/2026: ~45 s
+    na máquina com antivírus, e a 1ª tentativa estourava o limite de 60 s.
+    Devolve quanto levou."""
+    from google.adk.agents import Agent
+    from google.adk.models.lite_llm import LiteLlm
+
+    started = time.perf_counter()
+    warm_agent = Agent(
+        name="aquecimento",
+        model=LiteLlm(
+            model=root_agent.model.model,
+            mock_response="ok",
+            num_retries=0,
+        ),
+        instruction=root_agent.instruction,
+        tools=list(root_agent.tools),
+        generate_content_config=root_agent.generate_content_config,
+    )
+
+    async for _ in _stream_agent_attempt(
+        agent=warm_agent,
+        user_id="aquecimento",
+        conversation_id="aquecimento",
+        clean_question="oi",
+        history=[
+            {"role": "user", "content": "olá", "attachments": []},
+            {"role": "assistant", "content": "Olá!", "attachments": []},
+        ],
+        source_collector=None,
+        attachments=None,
+    ):
+        pass
+
+    return time.perf_counter() - started
+
+
+def _notify_progress(
+    listener: Callable[[str], None] | None,
+    text: str,
+) -> None:
+    """Texto parcial para a tela; falha aqui nunca derruba a resposta."""
+    if listener is None:
+        return
+
+    try:
+        listener(_remove_display_notes(text) if text else "")
+    except Exception as error:
+        print(f"[PERF] progresso_falhou error={type(error).__name__}", flush=True)
+
+
 async def stream_agent(
     user_id: str,
     conversation_id: str,
@@ -622,7 +679,11 @@ async def stream_agent(
     file_collector: list[dict] | None = None,
     attempt_listener: AttemptListener | None = None,
     settings: RetrySettings | None = None,
+    progress_listener: Callable[[str], None] | None = None,
 ) -> AsyncIterator[str]:
+    """`progress_listener` recebe o texto parcial da tentativa em andamento
+    (vazio ao começar cada tentativa), para a tela mostrar a resposta
+    enquanto é escrita. A resposta final continua vindo pelos yields."""
     clean_question = question.strip()
 
     if not clean_question:
@@ -713,6 +774,7 @@ async def stream_agent(
                 await _simulate_failure(settings.simulated_failure.kind)
 
             attempt_chunks = []
+            _notify_progress(progress_listener, "")
 
             async with asyncio.timeout(timeout_seconds):
                 async for chunk in _stream_agent_attempt(
@@ -726,6 +788,7 @@ async def stream_agent(
                     usage=usage,
                 ):
                     attempt_chunks.append(chunk)
+                    _notify_progress(progress_listener, "".join(attempt_chunks))
 
             complete_response = "".join(attempt_chunks)
 

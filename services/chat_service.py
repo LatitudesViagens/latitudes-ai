@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 import re
+import time
 
 from supabase import Client
 
@@ -25,7 +26,7 @@ from database.messages import (
 )
 from services.custos import collect_usage, cost_fields
 from services.settings import RetrySettings, load_retry_settings
-from services.timing_log import log_event
+from services.timing_log import log_duration, log_event
 
 # services.agent_runner e services.title_service carregam o LiteLLM e o
 # agente (~4 s). São importados só quando a IA é usada (e pré-carregados em
@@ -70,7 +71,7 @@ class TurnFailedError(RuntimeError):
 class TurnInProgressError(RuntimeError):
     """Já existe uma resposta em andamento nesta conversa."""
 MAX_HISTORY_MESSAGES = 30
-TURN_MESSAGES_WINDOW = 120
+TURN_MESSAGES_WINDOW = 60
 ATTACHMENT_REFERENCE_PATTERN = re.compile(
     r"\b(anex|arquiv|imagem|foto|pdf|document|planilha|word|excel|csv)\w*\b",
     flags=re.IGNORECASE,
@@ -554,8 +555,14 @@ def _attempt_listener(
     reply_id: str,
     conversation_id: str,
     knowledge_entry_id: str | None = None,
+    pending: list | None = None,
 ):
-    """Registra cada tentativa e mantém o turno "vivo" enquanto roda."""
+    """Registra cada tentativa e mantém o turno "vivo" enquanto roda.
+
+    Com `pending`, o registro da tentativa (custo em R$, que pode buscar a
+    cotação no Banco Central, e a gravação em message_attempts) só é anotado
+    aqui e gravado por _flush_attempts depois da resposta: antes segurava a
+    resposta por até ~7 s."""
 
     def listener(event: dict) -> None:
         if event.get("event") == "start":
@@ -575,52 +582,111 @@ def _attempt_listener(
             f"status={event.get('status')} {(event.get('duration_ms') or 0) / 1000:.2f}s "
             f"erro={event.get('error_type')} custo_usd={event.get('cost_usd')}"
         )
-        log_attempt(
-            client=client,
-            message_id=reply_id,
-            conversation_id=conversation_id,
-            # Custo em R$ pela cotação do dia (PTAX ou reserva).
-            attempt={
-                **event,
-                **cost_fields(event.get("cost_usd")),
-                "knowledge_entry_id": knowledge_entry_id,
-            },
-        )
+        record = {
+            "client": client,
+            "message_id": reply_id,
+            "conversation_id": conversation_id,
+            "event": event,
+            "knowledge_entry_id": knowledge_entry_id,
+        }
+
+        if pending is not None:
+            pending.append(record)
+        else:
+            _write_attempt(record)
 
     return listener
 
 
+def _write_attempt(record: dict) -> None:
+    log_attempt(
+        client=record["client"],
+        message_id=record["message_id"],
+        conversation_id=record["conversation_id"],
+        # Custo em R$ pela cotação do dia (PTAX ou reserva).
+        attempt={
+            **record["event"],
+            **cost_fields(record["event"].get("cost_usd")),
+            "knowledge_entry_id": record["knowledge_entry_id"],
+        },
+    )
+
+
+def _flush_attempts(pending: list) -> None:
+    """Grava as tentativas anotadas. Nunca lança erro."""
+    while pending:
+        record = pending.pop(0)
+
+        try:
+            _write_attempt(record)
+        except Exception as error:
+            print(f"[TURN] Falha ao registrar a tentativa: {type(error).__name__}", flush=True)
+
+
 def _find_knowledge_match(
     client: Client,
-    conversation_id: str,
     question: str,
     user_message: dict,
     first_question: bool,
-):
+    prefetch=None,
+) -> tuple:
     """Procura uma resposta aprovada parecida (services/base_conhecimento).
-    Perguntas com anexo seguem direto para a IA. Nunca lança erro."""
+    Perguntas com anexo seguem direto para a IA. Nunca lança erro.
+
+    Devolve (resposta parecida ou None, usos de IA). O custo é registrado
+    pelo chamador no fim do turno (_log_knowledge_usage), para não atrasar a
+    IA. `prefetch` é o embedding já calculado no início da tarefa."""
     if user_message.get("attachments"):
-        return None
+        return None, []
+
+    usages: list = []
+    embedding = None
+
+    if prefetch is not None:
+        prefetch_question, future = prefetch
+
+        if prefetch_question == question:
+            try:
+                embedding, prefetch_usages = future.result(timeout=30)
+                usages.extend(prefetch_usages)
+            except Exception as error:
+                print(f"[BASE] Cálculo antecipado indisponível: {type(error).__name__}", flush=True)
 
     try:
         from services.base_conhecimento import find_knowledge_match
 
-        with collect_usage() as usages:
+        with collect_usage() as collected:
             knowledge_match = find_knowledge_match(
                 client=client,
                 question=question,
                 first_question=first_question,
+                embedding=embedding,
             )
 
+        usages.extend(collected)
+        return knowledge_match, usages
+    except Exception as error:
+        print(f"[BASE] Falha ao consultar a base: {type(error).__name__}", flush=True)
+        return None, usages
+
+
+def _log_knowledge_usage(
+    client: Client,
+    conversation_id: str,
+    usages: list,
+) -> None:
+    """Custo da consulta à base, gravado no fim do turno. Nunca lança erro."""
+    if not usages:
+        return
+
+    try:
         log_ai_usage(
             client=client,
             usages=usages,
             conversation_id=conversation_id,
         )
-        return knowledge_match
     except Exception as error:
-        print(f"[BASE] Falha ao consultar a base: {type(error).__name__}", flush=True)
-        return None
+        print(f"[BASE] Falha ao registrar o custo: {type(error).__name__}", flush=True)
 
 
 def _answer_from_knowledge_base(
@@ -713,6 +779,8 @@ async def run_turn_stream(
     user_id: str,
     conversation_id: str,
     reply_id: str,
+    knowledge_prefetch=None,
+    progress_listener=None,
 ) -> AsyncIterator[str]:
     """Executa (ou repete) um turno, sempre atualizando a MESMA resposta.
 
@@ -720,6 +788,16 @@ async def run_turn_stream(
     tentativas: marca 'erro' com mensagem amigável e lança TurnFailedError.
     Interrupção (página recarregada, "Parar"): marca 'erro' e repassa.
     """
+    # Tempo de cada etapa antes da IA ("[TURN] reply=... preparo ..." no log).
+    tag = f"[TURN] reply={str(reply_id)[:8]} preparo"
+    step = time.perf_counter()
+    preparation = step
+
+    def step_done(name: str) -> None:
+        nonlocal step
+        log_duration(f"{tag} {name}", step)
+        step = time.perf_counter()
+
     # Só as mais recentes: a IA recebe no máximo MAX_HISTORY_MESSAGES; a folga
     # cobre turnos cancelados/com erro que o filtro do histórico descarta.
     messages = list_messages(
@@ -745,25 +823,34 @@ async def run_turn_stream(
         if str(message.get("id")) == str(reply.get("reply_to"))
     )
     question = str(user_message.get("content", "")).strip()
+    step_done("carregar_conversa")
 
-    update_reply(
-        client=client,
-        message_id=reply_id,
-        status=STATUS_PROCESSING,
-        content="",
-    )
+    # Pergunta nova: a resposta já nasce "pendente" (ativa) e vira
+    # "processando" quando a IA começa (_attempt_listener), então não precisa
+    # de outra gravação aqui (~0,5 s). Só o "Tentar novamente" (que vem de
+    # "erro") precisa reativar o turno antes.
+    if message_status(reply) != STATUS_PENDING:
+        update_reply(
+            client=client,
+            message_id=reply_id,
+            status=STATUS_PROCESSING,
+            content="",
+        )
+    step_done("gravar_status")
 
     agent_history = _history_for_agent(messages, user_message)
-    knowledge_match = _find_knowledge_match(
+    knowledge_match, knowledge_usages = _find_knowledge_match(
         client=client,
-        conversation_id=conversation_id,
         question=question,
         user_message=user_message,
         first_question=not any(
             message.get("role") == "assistant"
             for message in agent_history
         ),
+        prefetch=knowledge_prefetch,
     )
+
+    step_done("base_de_conhecimento")
 
     if knowledge_match is not None and knowledge_match.mode == "direta":
         content = _answer_from_knowledge_base(
@@ -771,6 +858,11 @@ async def run_turn_stream(
             conversation_id=conversation_id,
             reply_id=reply_id,
             knowledge_match=knowledge_match,
+        )
+        _log_knowledge_usage(
+            client=client,
+            conversation_id=conversation_id,
+            usages=knowledge_usages,
         )
 
         if content:
@@ -780,6 +872,8 @@ async def run_turn_stream(
 
     from services import agent_runner
     from services.contexto_turno import TURNO_ATUAL, TurnoAtual
+
+    step_done("carregar_ia")
 
     # Ferramentas que consultam sistemas da Latitudes anotam as consultas
     # aqui (services/contexto_turno.py); o registro é gravado no fim do turno.
@@ -792,6 +886,8 @@ async def run_turn_stream(
     response_chunks = []
     sources = []
     generated_files = []
+    ai_finished = False
+    pending_attempts: list = []
 
     try:
         hydrated_history = _prepare_history_for_agent(
@@ -810,6 +906,8 @@ async def run_turn_stream(
             client=client,
             attachments=user_message.get("attachments") or [],
         )
+        step_done("historico_e_anexos")
+        log_duration(f"{tag} total", preparation)
 
         async for chunk in agent_runner.stream_agent(
             user_id=str(user_id),
@@ -826,11 +924,14 @@ async def run_turn_stream(
                 knowledge_entry_id=(
                     knowledge_match.entry_id if knowledge_match else None
                 ),
+                pending=pending_attempts,
             ),
+            progress_listener=progress_listener,
         ):
             response_chunks.append(chunk)
             yield chunk
 
+        ai_finished = True
     except (GeneratorExit, asyncio.CancelledError):
         _mark_reply_error(client, reply_id, INTERRUPTED_MESSAGE)
         raise
@@ -846,10 +947,22 @@ async def run_turn_stream(
         raise TurnFailedError(TURN_FAILED_MESSAGE) from error
     finally:
         # Toda consulta de cliente é registrada, mesmo se o turno falhar.
+        step = time.perf_counter()
         _save_client_lookups(
             client=client,
             turno=turno_atual,
         )
+        step_done(f"final registrar_consultas_cliente ({len(turno_atual.consultas_cliente)})")
+
+        if not ai_finished:
+            # Turno interrompido ou com erro: tentativas e custo da consulta à
+            # base ficam registrados do mesmo jeito.
+            _flush_attempts(pending_attempts)
+            _log_knowledge_usage(
+                client=client,
+                conversation_id=conversation_id,
+                usages=knowledge_usages,
+            )
 
     assistant_content = "".join(response_chunks).strip()
 
@@ -864,12 +977,14 @@ async def run_turn_stream(
             }
         )
 
+    step = time.perf_counter()
     saved_files = _save_generated_files(
         client=client,
         user_id=user_id,
         conversation_id=conversation_id,
         files=generated_files,
     )
+    step_done(f"final salvar_arquivos ({len(generated_files)})")
 
     if saved_files is None:
         assistant_content += GENERATED_FILE_FAILURE_NOTE
@@ -883,6 +998,7 @@ async def run_turn_stream(
         attachments=saved_files,
         only_if_active=True,
     )
+    step_done("final gravar_resposta")
 
     if completed is None:
         # A pessoa clicou em Parar enquanto a resposta terminava: vale o
@@ -891,6 +1007,14 @@ async def run_turn_stream(
             f"[TURN] reply={reply_id} resposta descartada (interrompida)",
             flush=True,
         )
+
+    # Depois de gravar a resposta, para não atrasar a tela.
+    _flush_attempts(pending_attempts)
+    _log_knowledge_usage(
+        client=client,
+        conversation_id=conversation_id,
+        usages=knowledge_usages,
+    )
 
 
 async def process_message(
