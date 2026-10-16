@@ -1015,7 +1015,7 @@ button [data-testid="stMarkdownContainer"],
 }
 
 [class*="st-key-attach_card_"] [data-testid="stColumn"]:first-child,
-[class*="st-key-attach_card_"] [data-testid="stColumn"]:last-child {
+[class*="st-key-attach_card_"] [data-testid="stColumn"]:nth-child(n+3) {
     flex: 0 0 auto !important;
 }
 
@@ -1068,3 +1068,203 @@ button [data-testid="stMarkdownContainer"],
     color: var(--latitudes-olive-dark) !important;
     font-size: 20px !important;
 }
+
+/* Arquivo gerado pela ÁGORA (16/10): cartão maior, selo grande e os
+   botões "Abrir" (contorno) e "Baixar" (cheio) escritos. */
+[class*="st-key-attach_card_gen_"] {
+    width: 460px;
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(98, 82, 52, 0.08);
+}
+
+[class*="st-key-attach_card_gen_"] .file-badge {
+    width: 46px;
+    height: 46px;
+    border-radius: 10px;
+    font-size: 11px;
+}
+
+[class*="st-key-attach_card_gen_"] .file-name {
+    font-size: 15px;
+}
+
+[class*="st-key-attach_card_gen_"] .file-details {
+    margin-top: 2px;
+    font-size: 12.5px;
+}
+
+[class*="st-key-attach_card_gen_"] button {
+    min-height: 36px;
+    padding: 0 14px !important;
+    border-radius: 9px !important;
+    font-size: 14px !important;
+    white-space: nowrap;
+}
+
+[class*="st-key-attach_card_gen_"] button[kind="secondary"] {
+    border: 1px solid var(--latitudes-border) !important;
+    background: var(--latitudes-white) !important;
+}
+
+[class*="st-key-attach_card_gen_"] button[kind="secondary"]:hover {
+    border-color: var(--latitudes-olive) !important;
+    background: var(--latitudes-ivory) !important;
+}
+
+[class*="st-key-attach_card_gen_"] button[kind="primary"],
+[class*="st-key-attach_card_gen_"] button[kind="primary"] [data-testid="stIconMaterial"] {
+    color: #FFFFFF !important;
+}
+
+[class*="st-key-attach_card_gen_"] button [data-testid="stIconMaterial"] {
+    font-size: 18px !important;
+}
+
+/* No celular, só os ícones: o nome do arquivo precisa do espaço. */
+@media (max-width: 560px) {
+    [class*="st-key-attach_card_gen_"] button [data-testid="stMarkdownContainer"] {
+        display: none !important;
+    }
+
+    [class*="st-key-attach_card_gen_"] button {
+        padding: 0 10px !important;
+    }
+}
+
+/* ------------------------------------------------------------------
+   Pré-visualização de arquivos (ui/visualizar_arquivo.py)
+   ------------------------------------------------------------------ */
+
+.pv-file-name {
+    margin-bottom: 4px;
+    color: var(--latitudes-muted);
+    font-size: 13px;
+}
+
+.pv-slide {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    aspect-ratio: 16 / 9;
+    margin-bottom: 14px;
+    padding: 5% 6% 4%;
+    overflow: hidden;
+    border: 1px solid var(--latitudes-border);
+    border-radius: 10px;
+    color: #333333;
+    font-family: Arial, sans-serif;
+}
+
+.pv-slide-title {
+    padding-bottom: 8px;
+    border-bottom: 3px solid #FEBA12;
+    align-self: flex-start;
+    color: #625234;
+    font-family: Georgia, serif;
+    font-size: clamp(16px, 3vw, 26px);
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.pv-slide-body {
+    margin-top: 14px;
+    font-size: clamp(11px, 1.7vw, 15px);
+    line-height: 1.45;
+}
+
+.pv-line {
+    margin-bottom: 4px;
+}
+
+.pv-marker {
+    display: inline-block;
+    min-width: 1.8em;
+    color: #94825D;
+    font-weight: 700;
+}
+
+.pv-slide-number {
+    position: absolute;
+    bottom: 3%;
+    left: 6%;
+    color: #9B9B9C;
+    font-size: 11px;
+}
+
+.pv-cover,
+.pv-section {
+    justify-content: center;
+}
+
+.pv-cover .pv-slide-title,
+.pv-section .pv-slide-title {
+    font-size: clamp(20px, 4vw, 36px);
+}
+
+.pv-dark .pv-slide-title,
+.pv-dark .pv-slide-body {
+    color: #FFFFFF;
+}
+
+.pv-cover .pv-slide-number,
+.pv-section .pv-slide-number {
+    display: none;
+}
+
+.pv-table {
+    width: 100%;
+    margin: 8px 0 12px;
+    border-collapse: collapse;
+    font-size: 0.9em;
+}
+
+.pv-table th {
+    padding: 6px 8px;
+    background: #94825D;
+    color: #FFFFFF;
+    text-align: left;
+}
+
+.pv-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid #DED8CA;
+}
+
+.pv-table tr:nth-child(odd) td {
+    background: #F6F4F0;
+}
+
+.pv-page {
+    padding: 28px 34px;
+    border: 1px solid var(--latitudes-border);
+    border-radius: 10px;
+    background: #FFFFFF;
+    color: #333333;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.pv-page h1,
+.pv-page h2,
+.pv-page h3,
+.pv-page h4 {
+    margin: 18px 0 8px;
+    color: #625234;
+    font-family: Georgia, serif;
+}
+
+.pv-page p {
+    margin: 0 0 6px;
+}
+
+.pv-page h1 {
+    margin-top: 0;
+    font-size: 26px;
+}
+
+.pv-page h2 { font-size: 20px; }
+.pv-page h3 { font-size: 17px; }
+.pv-page h4 { font-size: 15px; color: #94825D; }

@@ -1453,49 +1453,75 @@ def show_attachment_card(
     size,
     path: str,
     load_file,
+    kind_label: str | None = None,
+    generated: bool = False,
 ) -> None:
-    """Anexo como cartão (selo do tipo, nome, tipo · tamanho e baixar), como
-    no ChatGPT e no Claude; antes era uma linha "📎 nome" solta no balão."""
+    """Arquivo como cartão (selo do tipo, nome, tipo · tamanho, Abrir e
+    Baixar), como no ChatGPT e no Claude. Anexos da pessoa usam só ícones;
+    arquivos gerados pela ÁGORA ganham cartão maior, com os botões escritos."""
     import hashlib
+
+    from ui import visualizar_arquivo
 
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     badge_text, badge_class = ATTACHMENT_BADGES.get(
         extension,
         ((extension[:4] or "ARQ").upper(), "txt"),
     )
-    details = " · ".join(part for part in (badge_text, _format_size(size)) if part)
-    card_key = "attach_card_" + hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
+    details = " · ".join(
+        part for part in (kind_label or badge_text, _format_size(size)) if part
+    )
+    card_hash = hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
+    card_key = f"attach_card_{'gen_' if generated else ''}{card_hash}"
+    can_open = visualizar_arquivo.can_preview(mime_type)
 
     with st.container(key=card_key):
-        badge_column, info_column, button_column = st.columns(
-            [1, 6, 1],
+        columns = st.columns(
+            [1, 6, 1, 1] if can_open else [1, 6, 1],
             gap="small",
             vertical_alignment="center",
         )
 
-        with badge_column:
+        with columns[0]:
             st.html(
                 f'<div class="file-badge file-badge-{badge_class}">'
                 f"{escape(badge_text)}</div>"
             )
 
-        with info_column:
+        with columns[1]:
             st.html(
                 f'<div class="file-name" title="{escape(name)}">{escape(name)}</div>'
                 f'<div class="file-details">{escape(details)}</div>'
             )
 
-        with button_column:
+        if can_open:
+            with columns[2]:
+                # A prévia abre na mesma execução (sem st.rerun), numa janela.
+                if st.button(
+                    "Abrir" if generated else "",
+                    icon=":material/visibility:",
+                    key=f"open_{path}",
+                    type="secondary" if generated else "tertiary",
+                    help="Ver o arquivo antes de baixar",
+                ):
+                    visualizar_arquivo.show_preview(
+                        name=name,
+                        mime_type=mime_type,
+                        path=path,
+                        load_file=load_file,
+                    )
+
+        with columns[-1]:
             # O arquivo só é baixado do Storage quando a pessoa clica.
             st.download_button(
-                label="",
+                label="Baixar" if generated else "",
                 data=load_file,
                 file_name=name,
                 mime=mime_type,
                 icon=":material/download:",
                 key=f"download_{path}",
                 on_click="ignore",
-                type="tertiary",
+                type="primary" if generated else "tertiary",
                 help="Baixar o arquivo",
             )
 
@@ -1570,20 +1596,20 @@ def _cached_attachment_image(
 
 
 GENERATED_FILE_LABELS = {
-    "application/pdf": ("PDF", ":material/picture_as_pdf:"),
+    "application/pdf": "PDF",
     (
         "application/vnd.openxmlformats-officedocument."
         "wordprocessingml.document"
-    ): ("Documento Word", ":material/description:"),
+    ): "Documento Word",
     (
         "application/vnd.openxmlformats-officedocument."
         "spreadsheetml.sheet"
-    ): ("Planilha Excel", ":material/table_view:"),
-    "text/csv": ("Arquivo CSV", ":material/csv:"),
+    ): "Planilha Excel",
+    "text/csv": "Planilha CSV",
     (
         "application/vnd.openxmlformats-officedocument."
         "presentationml.presentation"
-    ): ("Slides", ":material/slideshow:"),
+    ): "Apresentação",
 }
 
 
@@ -1592,13 +1618,7 @@ def display_generated_files(
     attachments: list[dict] | None,
 ) -> None:
     for attachment in attachments or []:
-        name = str(attachment.get("name", "arquivo"))
-        mime_type = str(attachment.get("mime_type", ""))
-        label, icon = GENERATED_FILE_LABELS.get(
-            mime_type,
-            ("Arquivo", ":material/draft:"),
-        )
-        size_kb = max(1, round(int(attachment.get("size") or 0) / 1024))
+        mime_type = str(attachment.get("mime_type", "") or "application/octet-stream")
 
         # O arquivo só é baixado do Storage quando a pessoa clica.
         def load_file(attachment=attachment) -> bytes:
@@ -1607,28 +1627,16 @@ def display_generated_files(
                 attachment=attachment,
             )
 
-        with st.container(border=True):
-            info_column, button_column = st.columns(
-                [3, 1],
-                vertical_alignment="center",
-            )
-
-            with info_column:
-                st.markdown(f"**{escape_dollar_signs(name)}**")
-                st.caption(f"{label} · {size_kb} KB · Identidade Latitudes")
-
-            with button_column:
-                st.download_button(
-                    "Baixar",
-                    data=load_file,
-                    file_name=name,
-                    mime=mime_type or "application/octet-stream",
-                    icon=icon,
-                    key=f"generated_{attachment.get('path', name)}",
-                    on_click="ignore",
-                    type="primary",
-                    use_container_width=True,
-                )
+        name = str(attachment.get("name", "arquivo"))
+        show_attachment_card(
+            name=name,
+            mime_type=mime_type,
+            size=attachment.get("size"),
+            path=str(attachment.get("path", name)),
+            load_file=load_file,
+            kind_label=GENERATED_FILE_LABELS.get(mime_type, "Arquivo"),
+            generated=True,
+        )
 
 
 def display_image_gallery(
