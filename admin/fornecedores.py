@@ -793,8 +793,8 @@ def show_suppliers_section(client: Client) -> None:
     )
     mode = st.segmented_control(
         "Como cadastrar",
-        options=["Cadastrar na mão", "Importar planilha"],
-        default="Cadastrar na mão",
+        options=["Cadastrar", "Importar planilha"],
+        default="Cadastrar",
         key="suppliers_new_mode",
         label_visibility="collapsed",
     )
