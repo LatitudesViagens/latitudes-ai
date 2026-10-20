@@ -1,0 +1,326 @@
+"""Fornecedores na aba Base de conhecimento do Painel de controle.
+
+O TI revisa as sugestões (aprova com edições ou rejeita), edita ou retira
+os aprovados e inclui fornecedores direto. Toda mudança limpa a lista da
+memória do servidor (a ÁGORA passa a usar na próxima pergunta).
+"""
+
+import traceback
+
+import pandas
+import streamlit as st
+from supabase import Client
+
+from admin.cache import user_emails
+from admin import supabase_admin
+from database.suppliers import (
+    FIELDS,
+    STATUS_APPROVED,
+    STATUS_PENDING,
+    STATUS_REJECTED,
+    clean_stars,
+    create_approved_supplier,
+    list_suppliers,
+    review_supplier,
+)
+from services.fornecedores import forget_suppliers_cache, supplier_key
+from ui.sugerir_fornecedores import COLUMNS, incomplete_rows, supplier_columns_config
+
+FLASH_KEY = "admin_suppliers_flash"
+
+
+def _flash(message: str) -> None:
+    st.session_state[FLASH_KEY] = message
+    st.rerun()
+
+
+def _emails(client: Client) -> dict[str, str]:
+    if not supabase_admin.is_configured():
+        return {}
+
+    try:
+        return user_emails(client)
+    except Exception as error:
+        print(f"[TI] Falha ao listar e-mails: {type(error).__name__}", flush=True)
+        return {}
+
+
+def _review(
+    client: Client,
+    rows: list[dict],
+    status: str,
+    note: str | None = None,
+) -> int:
+    done = 0
+
+    for row in rows:
+        try:
+            review_supplier(
+                client=client,
+                supplier_id=str(row["id"]),
+                supplier=row,
+                status=status,
+                reviewer_id=st.session_state.user_id,
+                note=note,
+            )
+            done += 1
+        except Exception:
+            traceback.print_exc()
+
+    forget_suppliers_cache()
+    return done
+
+
+def _clean_row(row: dict) -> tuple:
+    """Valores comparáveis: célula vazia (NaN) = vazio e 4.0 = 4 estrelas."""
+    values = []
+
+    for name in FIELDS:
+        value = row.get(name)
+
+        if name == "stars":
+            values.append(clean_stars(value))
+        elif value is None or (isinstance(value, float) and value != value):
+            values.append("")
+        else:
+            values.append(" ".join(str(value).split()))
+
+    return tuple(values)
+
+
+def _table(
+    suppliers: list[dict],
+    extra: dict[str, list],
+) -> pandas.DataFrame:
+    table = pandas.DataFrame(
+        [{"include": False, **{name: item.get(name) for name in FIELDS}} for item in suppliers],
+        columns=list(COLUMNS),
+    )
+
+    for name, values in extra.items():
+        table[name] = values
+
+    table["id"] = [str(item["id"]) for item in suppliers]
+    return table
+
+
+def _show_pending(
+    client: Client,
+    pending: list[dict],
+    approved_keys: set[tuple[str, str, str]],
+) -> None:
+    st.subheader(f"Fornecedores aguardando aprovação ({len(pending)})")
+
+    if not pending:
+        st.caption("Nenhuma sugestão pendente.")
+        return
+
+    st.caption(
+        "Marque os que vão entrar, corrija o que precisar e aprove. O que "
+        "for aprovado fica visível para todos que usam a ÁGORA."
+    )
+    emails = _emails(client)
+    table = _table(
+        suppliers=pending,
+        extra={
+            "already": [
+                "Sim" if supplier_key(item) in approved_keys else ""
+                for item in pending
+            ],
+            "author": [emails.get(str(item.get("suggested_by")), "") for item in pending],
+            "source": [item.get("source_file") or "" for item in pending],
+        },
+    )
+    config = supplier_columns_config()
+    config["include"] = st.column_config.CheckboxColumn("Selecionar", width="small")
+    config["already"] = st.column_config.TextColumn("Já na base", disabled=True, width="small")
+    config["author"] = st.column_config.TextColumn("Sugerido por", disabled=True)
+    config["source"] = st.column_config.TextColumn("Arquivo", disabled=True)
+
+    edited = st.data_editor(
+        table,
+        column_config=config,
+        column_order=[*COLUMNS, "already", "author", "source"],
+        hide_index=True,
+        width="stretch",
+        key="suppliers_pending_editor",
+    )
+    selected = [row for row in edited.to_dict(orient="records") if row.get("include")]
+    approve_column, reject_column = st.columns(2)
+
+    if approve_column.button(
+        f"Aprovar selecionados ({len(selected)})",
+        icon=":material/check:",
+        type="primary",
+        disabled=not selected,
+        use_container_width=True,
+        key="suppliers_approve",
+    ):
+        missing = incomplete_rows(selected)
+
+        if missing:
+            st.error(f"Preencha nome, país e serviço em {missing} linha(s).")
+        else:
+            done = _review(client=client, rows=selected, status=STATUS_APPROVED)
+            _flash(f"{done} fornecedor(es) aprovado(s) e incluído(s) na base.")
+
+    if reject_column.button(
+        f"Rejeitar selecionados ({len(selected)})",
+        icon=":material/close:",
+        disabled=not selected,
+        use_container_width=True,
+        key="suppliers_reject",
+    ):
+        done = _review(client=client, rows=selected, status=STATUS_REJECTED)
+        _flash(f"{done} sugestão(ões) rejeitada(s).")
+
+
+def _show_approved(
+    client: Client,
+    approved: list[dict],
+) -> None:
+    st.subheader(f"Fornecedores na base ({len(approved)})")
+
+    if not approved:
+        st.caption("Nenhum fornecedor aprovado ainda.")
+        return
+
+    search = st.text_input(
+        "Filtrar",
+        placeholder="País, cidade, nome ou serviço",
+        key="suppliers_filter",
+    )
+
+    if search.strip():
+        from services.fornecedores import normalize
+
+        wanted = normalize(search)
+        approved = [
+            item
+            for item in approved
+            if wanted in normalize(" ".join(str(item.get(name) or "") for name in FIELDS))
+        ]
+
+    table = _table(suppliers=approved, extra={})
+    config = supplier_columns_config()
+    config["include"] = st.column_config.CheckboxColumn("Selecionar", width="small")
+    edited = st.data_editor(
+        table,
+        column_config=config,
+        column_order=list(COLUMNS),
+        hide_index=True,
+        width="stretch",
+        key=f"suppliers_approved_editor_{search.strip()}",
+    )
+    original = {row["id"]: _clean_row(row) for row in table.to_dict(orient="records")}
+    rows = edited.to_dict(orient="records")
+    changed = [
+        row
+        for row in rows
+        if _clean_row(row) != original.get(row["id"])
+    ]
+    selected = [row for row in rows if row.get("include")]
+    save_column, remove_column = st.columns(2)
+
+    if save_column.button(
+        f"Salvar alterações ({len(changed)})",
+        icon=":material/save:",
+        disabled=not changed,
+        use_container_width=True,
+        key="suppliers_save",
+    ):
+        missing = incomplete_rows(changed)
+
+        if missing:
+            st.error(f"Preencha nome, país e serviço em {missing} linha(s).")
+        else:
+            done = _review(client=client, rows=changed, status=STATUS_APPROVED)
+            _flash(f"{done} fornecedor(es) atualizado(s).")
+
+    if remove_column.button(
+        f"Retirar selecionados ({len(selected)})",
+        icon=":material/delete:",
+        disabled=not selected,
+        use_container_width=True,
+        key="suppliers_remove",
+    ):
+        done = _review(
+            client=client,
+            rows=selected,
+            status=STATUS_REJECTED,
+            note="Retirado da base pelo TI.",
+        )
+        _flash(f"{done} fornecedor(es) retirado(s) da base.")
+
+
+def _show_new_supplier_form(client: Client) -> None:
+    st.subheader("Novo fornecedor")
+
+    with st.form("suppliers_new_form", clear_on_submit=True, border=True):
+        name_column, service_column = st.columns(2)
+        name = name_column.text_input("Nome")
+        service = service_column.text_input("Serviço", placeholder="Ex.: Hotel, Receptivo (DMC), Guia")
+        city_column, country_column, stars_column = st.columns([2, 2, 1])
+        city = city_column.text_input("Cidade")
+        country = country_column.text_input("País")
+        stars = stars_column.selectbox("Estrelas", options=["", "1", "2", "3", "4", "5"])
+        contact = st.text_input("Contato geral", placeholder="Site, e-mail ou telefone da empresa")
+        submitted = st.form_submit_button("Incluir na base", type="primary")
+
+    if not submitted:
+        return
+
+    supplier = {
+        "name": name,
+        "city": city,
+        "country": country,
+        "stars": stars,
+        "service": service,
+        "contact": contact,
+    }
+
+    if incomplete_rows([supplier]):
+        st.warning("Preencha nome, país e serviço.")
+        return
+
+    try:
+        create_approved_supplier(
+            client=client,
+            supplier=supplier,
+            reviewer_id=st.session_state.user_id,
+        )
+    except Exception:
+        traceback.print_exc()
+        st.error("Não foi possível incluir. Tente novamente.")
+        return
+
+    forget_suppliers_cache()
+    _flash("Fornecedor incluído na base.")
+
+
+def show_suppliers_section(client: Client) -> None:
+    message = st.session_state.pop(FLASH_KEY, None)
+
+    if message:
+        st.success(message)
+
+    try:
+        pending = list_suppliers(client=client, status=STATUS_PENDING)
+        approved = list_suppliers(client=client, status=STATUS_APPROVED)
+    except Exception as error:
+        print(f"[TI] Falha ao carregar fornecedores: {type(error).__name__}", flush=True)
+        st.error(
+            "Não foi possível carregar os fornecedores. Confira se a "
+            "migração 014 foi aplicada no Supabase."
+        )
+        return
+
+    _show_pending(
+        client=client,
+        pending=pending,
+        approved_keys={supplier_key(item) for item in approved},
+    )
+    st.divider()
+    _show_approved(client=client, approved=approved)
+    st.divider()
+    _show_new_supplier_form(client)

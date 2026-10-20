@@ -136,6 +136,21 @@ def _flash(message: str) -> None:
 
 
 def show_knowledge_tab(client: Client) -> None:
+    # Só a parte escolhida roda (como as seções do painel).
+    part = st.segmented_control(
+        "Parte da base",
+        options=["Respostas", "Fornecedores"],
+        default="Respostas",
+        key="admin_knowledge_part",
+        label_visibility="collapsed",
+    )
+
+    if part == "Fornecedores":
+        from admin.fornecedores import show_suppliers_section
+
+        show_suppliers_section(client)
+        return
+
     message = st.session_state.pop(FLASH_KEY, None)
 
     if message:

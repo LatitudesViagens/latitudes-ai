@@ -872,8 +872,15 @@ async def run_turn_stream(
 
     from services import agent_runner
     from services.contexto_turno import TURNO_ATUAL, TurnoAtual
+    from services.fornecedores import ensure_suppliers_loaded
 
     step_done("carregar_ia")
+
+    # A ferramenta buscar_fornecedores roda em outra thread e não pode usar a
+    # conexão do banco: a lista de aprovados fica na memória (relida a cada
+    # 10 minutos; nas outras perguntas não vai ao banco).
+    ensure_suppliers_loaded(client)
+    step_done("fornecedores")
 
     # Ferramentas que consultam sistemas da Latitudes anotam as consultas
     # aqui (services/contexto_turno.py); o registro é gravado no fim do turno.

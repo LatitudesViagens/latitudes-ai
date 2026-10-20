@@ -8,6 +8,7 @@ from google.genai import types
 import litellm
 
 from agent_tools.document_generator import generate_document
+from agent_tools.fornecedores import buscar_fornecedores
 from agent_tools.image_search import search_images
 from agent_tools.perfil_cliente import perfil_cliente
 from services import cronometro_agente
@@ -96,6 +97,22 @@ root_agent = Agent(
         "utilize a pesquisa quando for necessário confirmar se as informações "
         "continuam atuais. "
 
+        "Fornecedores da Latitudes: quando a pessoa pedir ou precisar de "
+        "fornecedores, hotéis, receptivos, guias, transporte ou outros "
+        "prestadores para um destino, consulte PRIMEIRO a ferramenta "
+        "buscar_fornecedores, antes de qualquer pesquisa na internet. "
+        "Apresente os encontrados numa seção 'Fornecedores da Latitudes', "
+        "como sugestão no chat, com os dados exatamente como vieram. "
+        "Sugestões da internet só depois, em seção separada, marcadas como "
+        "'encontradas na internet, não homologadas pela Latitudes'. "
+        "Quando a pessoa quiser sugerir, cadastrar ou incluir um fornecedor "
+        "na base, você não cadastra nada: diga em uma ou duas frases que, "
+        "abaixo desta resposta, o botão 'Sugerir fornecedor para a base' "
+        "abre a ficha (nome, cidade, país, estrelas, serviço e contato "
+        "geral da empresa) para ela conferir e enviar, e que o TI aprova "
+        "antes de o fornecedor ser usado. Não peça preços, propostas, "
+        "documentos nem contatos pessoais. "
+
         "Não use a pesquisa para conversas comuns, perguntas respondidas pelo "
         "histórico, resumos da própria conversa, organização de textos ou "
         "tarefas que não dependam de informações atuais. "
@@ -128,7 +145,8 @@ root_agent = Agent(
 
         "Você não possui acesso aos documentos internos da Latitudes. Dos "
         "sistemas internos, consulta apenas o RD Station CRM e o Envision, "
-        "somente pela ferramenta perfil_cliente. "
+        "somente pela ferramenta perfil_cliente, e a lista de fornecedores "
+        "aprovados, somente pela ferramenta buscar_fornecedores. "
 
         "Use a ferramenta perfil_cliente quando a consultora pedir o perfil, "
         "o histórico de viagens, o ticket médio ou as negociações de um "
@@ -257,6 +275,7 @@ root_agent = Agent(
         generate_document,
         search_images,
         perfil_cliente,
+        buscar_fornecedores,
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.2,
@@ -279,6 +298,7 @@ fallback_agent = Agent(
         generate_document,
         search_images,
         perfil_cliente,
+        buscar_fornecedores,
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.2,

@@ -528,6 +528,62 @@ def download_chat_attachment(
     return client.storage.from_(BUCKET_NAME).download(storage_path)
 
 
+TEXT_ATTACHMENT_MIME_TYPES = {
+    DOCX_MIME_TYPE,
+    XLSX_MIME_TYPE,
+    CSV_MIME_TYPE,
+    "text/plain",
+    "application/pdf",
+}
+
+
+def extract_attachment_text(
+    client: Client,
+    attachment: dict,
+) -> str:
+    """Texto de um anexo (planilha, Word, CSV, texto ou PDF), para ler listas
+    como a de fornecedores. Imagens não têm texto: devolve vazio."""
+    mime_type = str(attachment.get("mime_type", ""))
+    filename = str(attachment.get("name", "arquivo"))
+
+    if mime_type not in TEXT_ATTACHMENT_MIME_TYPES:
+        return ""
+
+    data = download_chat_attachment(
+        client=client,
+        attachment=attachment,
+    )
+
+    if mime_type == DOCX_MIME_TYPE:
+        return _extract_docx_text(data=data, filename=filename)
+
+    if mime_type == XLSX_MIME_TYPE:
+        return _extract_xlsx_text(data=data, filename=filename)
+
+    if mime_type == CSV_MIME_TYPE:
+        return _extract_csv_text(data=data, filename=filename)
+
+    if mime_type == "application/pdf":
+        import pypdfium2
+
+        document = pypdfium2.PdfDocument(data)
+
+        try:
+            pages = []
+
+            for page in document:
+                text_page = page.get_textpage()
+                pages.append(text_page.get_text_range())
+                text_page.close()
+                page.close()
+
+            return "\n\n".join(pages)[:MAX_EXTRACTED_TEXT_SIZE]
+        finally:
+            document.close()
+
+    return data.decode("utf-8", errors="replace")[:MAX_EXTRACTED_TEXT_SIZE]
+
+
 def hydrate_chat_attachments(
     client: Client,
     attachments: list[dict] | None,
