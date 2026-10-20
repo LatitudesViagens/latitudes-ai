@@ -3145,12 +3145,20 @@ def show_authenticated_area() -> None:
                     else None
                 )
 
+                # Resposta com fornecedores da Latitudes (só Operações e TI)
+                # não vai para a base de conhecimento, que todos leem.
+                has_suppliers = any(
+                    isinstance(source, dict) and source.get("type") == "suppliers"
+                    for source in message.get("sources") or []
+                )
+
                 # Fornecedores não são sugeridos pela conversa: o cadastro é
                 # feito só no Painel, pelos coordenadores de Operações.
                 if (
                     question_message is not None
                     and not is_itinerary
                     and not is_from_knowledge_base
+                    and not has_suppliers
                 ):
                     show_suggestion_button(
                         client=client,

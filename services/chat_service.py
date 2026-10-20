@@ -56,6 +56,9 @@ INTERRUPTED_MESSAGE = (
 )
 
 ACTIVE_STATUSES = {STATUS_PENDING, STATUS_PROCESSING}
+
+# Marca, nas fontes da resposta, que ela traz fornecedores da Latitudes.
+SUPPLIERS_SOURCE_TYPE = "suppliers"
 # Estados em que o turno pode ser executado (de novo).
 RUNNABLE_STATUSES = {STATUS_PENDING, STATUS_PROCESSING, STATUS_ERROR}
 
@@ -992,6 +995,11 @@ async def run_turn_stream(
                 "similarity": round(knowledge_match.similarity, 4),
             }
         )
+
+    if turno_atual.used_suppliers:
+        # Resposta com fornecedores (só Operações e TI): a tela não oferece
+        # "Sugerir para a base de conhecimento", que é lida por todos.
+        sources.append({"type": SUPPLIERS_SOURCE_TYPE})
 
     step = time.perf_counter()
     saved_files = _save_generated_files(

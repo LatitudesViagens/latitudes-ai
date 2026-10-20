@@ -16,6 +16,9 @@ class TurnoAtual:
     # Equipe de Operações ou TI (conferido no banco pelo turno): só então a
     # ferramenta buscar_fornecedores devolve o cadastro (migração 015).
     can_read_suppliers: bool = False
+    # A ferramenta devolveu fornecedores nesta resposta: a tela não oferece
+    # "Sugerir para a base de conhecimento" (a base é lida por todos).
+    used_suppliers: bool = False
     # Consultas feitas pelas ferramentas neste turno. As ferramentas rodam em
     # outra thread e só ANOTAM aqui; quem grava no banco é o turno, na própria
     # thread (a conexão do Supabase não pode ser usada por duas threads).

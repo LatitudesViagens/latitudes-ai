@@ -230,12 +230,61 @@ def show_users_tab(client: Client) -> None:
     )
 
 
+def _notice_box(state_key: str) -> None:
+    """Lugar fixo do aviso da seção. A mensagem entrava acima da seção só
+    depois do clique e empurrava tudo para baixo: enquanto a tela rodava de
+    novo, o formulário aparecia duas vezes (o antigo e o novo)."""
+    box = st.container()
+    notice = st.session_state.pop(state_key, None)
+
+    if notice:
+        kind, text = notice
+        getattr(box, kind)(text)
+
+
+def _change_ti_role(
+    client: Client,
+    emails: dict[str, str],
+    grant: bool,
+) -> None:
+    """Clique em Incluir/Retirar do TI: roda antes da tela (on_click), então
+    a tela roda uma vez só, já com a equipe atualizada."""
+    target_user_id = st.session_state.get("admin_ti_target")
+
+    if target_user_id is None:
+        st.session_state[TI_ROLE_STATE_KEY] = ("warning", "Escolha o usuário.")
+        return
+
+    try:
+        supabase_admin.set_ti_role(
+            requester=client,
+            target_user_id=target_user_id,
+            grant=grant,
+        )
+    except supabase_admin.CannotRemoveOwnTiRoleError:
+        st.session_state[TI_ROLE_STATE_KEY] = ("warning", "Você não pode retirar o próprio acesso.")
+        return
+    except supabase_admin.LastTiError:
+        st.session_state[TI_ROLE_STATE_KEY] = ("warning", "A ÁGORA precisa de pelo menos uma pessoa no TI.")
+        return
+    except supabase_admin.NotAuthorizedError:
+        st.session_state[TI_ROLE_STATE_KEY] = ("error", "Acesso restrito ao TI.")
+        return
+    except Exception as error:
+        print(f"[TI] Falha ao mudar o papel TI: {type(error).__name__}", flush=True)
+        st.session_state[TI_ROLE_STATE_KEY] = ("error", "Não foi possível salvar. Tente novamente.")
+        return
+
+    st.session_state[TI_ROLE_STATE_KEY] = (
+        "success",
+        f"**{emails[target_user_id]}** "
+        + ("incluído(a) no TI." if grant else "retirado(a) do TI."),
+    )
+
+
 def _show_ti_section(client: Client) -> None:
     """Quem acessa o Painel do TI. Antes só pelo SQL Editor do Supabase."""
-    changed = st.session_state.pop(TI_ROLE_STATE_KEY, None)
-
-    if changed:
-        st.success(changed)
+    _notice_box(TI_ROLE_STATE_KEY)
 
     st.subheader("Equipe de TI")
     st.caption(
@@ -269,61 +318,33 @@ def _show_ti_section(client: Client) -> None:
         return
 
     with st.form("admin_ti_role_form", border=True):
-        target_user_id = st.selectbox(
+        st.selectbox(
             "Usuário",
             options=user_ids,
             format_func=lambda user_id: emails[user_id] + (" (TI)" if user_id in ti_ids else ""),
             index=None,
             placeholder="Escolha o usuário",
+            key="admin_ti_target",
         )
         grant_column, revoke_column = st.columns(2)
 
         with grant_column:
-            grant = st.form_submit_button(
+            st.form_submit_button(
                 "Incluir no TI",
                 icon=":material/admin_panel_settings:",
                 use_container_width=True,
+                on_click=_change_ti_role,
+                args=(client, emails, True),
             )
 
         with revoke_column:
-            revoke = st.form_submit_button(
+            st.form_submit_button(
                 "Retirar do TI",
                 icon=":material/remove_moderator:",
                 use_container_width=True,
+                on_click=_change_ti_role,
+                args=(client, emails, False),
             )
-
-    if not (grant or revoke):
-        return
-
-    if target_user_id is None:
-        st.warning("Escolha o usuário.")
-        return
-
-    try:
-        supabase_admin.set_ti_role(
-            requester=client,
-            target_user_id=target_user_id,
-            grant=bool(grant),
-        )
-    except supabase_admin.CannotRemoveOwnTiRoleError:
-        st.warning("Você não pode retirar o próprio acesso.")
-        return
-    except supabase_admin.LastTiError:
-        st.warning("A ÁGORA precisa de pelo menos uma pessoa no TI.")
-        return
-    except supabase_admin.NotAuthorizedError:
-        st.error("Acesso restrito ao TI.")
-        return
-    except Exception as error:
-        print(f"[TI] Falha ao mudar o papel TI: {type(error).__name__}", flush=True)
-        st.error("Não foi possível salvar. Tente novamente.")
-        return
-
-    st.session_state[TI_ROLE_STATE_KEY] = (
-        f"**{emails[target_user_id]}** "
-        + ("incluído(a) no TI." if grant else "retirado(a) do TI.")
-    )
-    st.rerun()
 
 
 OPERATIONS_STATE_KEY = "admin_operations_team_changed"
@@ -337,14 +358,48 @@ OPERATIONS_GROUP_TITLES = {
 }
 
 
+def _change_operations_team(
+    client: Client,
+    emails: dict[str, str],
+    remove: bool,
+) -> None:
+    """Clique em Incluir/Retirar de Operações: roda antes da tela (on_click),
+    então a tela roda uma vez só, já com a equipe atualizada."""
+    target_user_id = st.session_state.get("admin_operations_target")
+    level = st.session_state.get("admin_operations_level") or LEVEL_COORDINATOR
+
+    if target_user_id is None:
+        st.session_state[OPERATIONS_STATE_KEY] = ("warning", "Escolha o usuário.")
+        return
+
+    try:
+        if remove:
+            remove_from_operations(
+                client=client,
+                user_id=target_user_id,
+            )
+            message = f"**{emails[target_user_id]}** retirado(a) de Operações."
+        else:
+            set_operations_level(
+                client=client,
+                user_id=target_user_id,
+                level=level,
+                changed_by=str(st.session_state.get("user_id") or ""),
+            )
+            message = f"**{emails[target_user_id]}** agora é {OPERATIONS_LEVEL_LABELS[level].lower()} em Operações."
+    except Exception as error:
+        print(f"[TI] Falha ao mudar a equipe de Operações: {type(error).__name__}", flush=True)
+        st.session_state[OPERATIONS_STATE_KEY] = ("error", "Não foi possível salvar. Tente novamente.")
+        return
+
+    st.session_state[OPERATIONS_STATE_KEY] = ("success", message)
+
+
 def _show_operations_section(client: Client) -> None:
     """Equipe de Operações (migração 015): coordenadores cadastram
     fornecedores no Painel; operadoras recebem os fornecedores pela
     conversa com a ÁGORA."""
-    changed = st.session_state.pop(OPERATIONS_STATE_KEY, None)
-
-    if changed:
-        st.success(changed)
+    _notice_box(OPERATIONS_STATE_KEY)
 
     st.subheader("Equipe de Operações")
     st.caption(
@@ -380,7 +435,7 @@ def _show_operations_section(client: Client) -> None:
         return
 
     with st.form("admin_operations_team_form", border=True):
-        target_user_id = st.selectbox(
+        st.selectbox(
             "Usuário",
             options=user_ids,
             format_func=lambda user_id: emails[user_id] + (
@@ -388,58 +443,34 @@ def _show_operations_section(client: Client) -> None:
             ),
             index=None,
             placeholder="Escolha o usuário",
+            key="admin_operations_target",
         )
-        level = st.radio(
+        st.radio(
             "Nível",
             options=list(OPERATIONS_LEVEL_LABELS),
             format_func=OPERATIONS_LEVEL_LABELS.get,
             horizontal=True,
+            key="admin_operations_level",
         )
         save_column, remove_column = st.columns(2)
 
         with save_column:
-            save = st.form_submit_button(
+            st.form_submit_button(
                 "Incluir ou mudar o nível",
                 icon=":material/group_add:",
                 use_container_width=True,
+                on_click=_change_operations_team,
+                args=(client, emails, False),
             )
 
         with remove_column:
-            remove = st.form_submit_button(
+            st.form_submit_button(
                 "Retirar de Operações",
                 icon=":material/group_remove:",
                 use_container_width=True,
+                on_click=_change_operations_team,
+                args=(client, emails, True),
             )
-
-    if not (save or remove):
-        return
-
-    if target_user_id is None:
-        st.warning("Escolha o usuário.")
-        return
-
-    try:
-        if save:
-            set_operations_level(
-                client=client,
-                user_id=target_user_id,
-                level=level,
-                changed_by=str(st.session_state.get("user_id") or ""),
-            )
-            message = f"**{emails[target_user_id]}** agora é {OPERATIONS_LEVEL_LABELS[level].lower()} em Operações."
-        else:
-            remove_from_operations(
-                client=client,
-                user_id=target_user_id,
-            )
-            message = f"**{emails[target_user_id]}** retirado(a) de Operações."
-    except Exception as error:
-        print(f"[TI] Falha ao mudar a equipe de Operações: {type(error).__name__}", flush=True)
-        st.error("Não foi possível salvar. Tente novamente.")
-        return
-
-    st.session_state[OPERATIONS_STATE_KEY] = message
-    st.rerun()
 
 
 def _show_delete_section(client: Client) -> None:

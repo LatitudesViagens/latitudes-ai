@@ -438,16 +438,24 @@ def search_suppliers(
 
 
 def describe_supplier(supplier: dict) -> str:
-    place = ", ".join(part for part in (supplier.get("city"), supplier.get("country")) if part)
-    details = [str(supplier.get("service") or "").strip(), place]
+    """Bloco em Markdown, um dado por linha (antes era tudo numa linha só,
+    separado por travessões, e ficava confuso). A ÁGORA repete como está."""
+    place = ", ".join(
+        str(part).strip()
+        for part in (supplier.get("city"), supplier.get("country"))
+        if part and str(part).strip()
+    )
+    lines = [f"**{str(supplier.get('name') or '').strip()}**"]
+    details = (
+        ("Serviço", str(supplier.get("service") or "").strip()),
+        ("Local", place),
+        ("Estrelas", str(supplier["stars"]) if supplier.get("stars") else ""),
+        ("Perfil", str(supplier.get("profile") or "").strip()),
+        ("Contato", str(supplier.get("contact") or "").strip()),
+    )
 
-    if supplier.get("stars"):
-        details.append(f"{supplier['stars']} estrelas")
+    for label, value in details:
+        if value:
+            lines.append(f"- {label}: {value}")
 
-    if supplier.get("profile"):
-        details.append(f"perfil {supplier['profile']}")
-
-    if supplier.get("contact"):
-        details.append(f"contato: {supplier['contact']}")
-
-    return f"- {supplier.get('name')} — " + " — ".join(part for part in details if part)
+    return "\n".join(lines)

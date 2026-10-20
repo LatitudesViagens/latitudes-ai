@@ -586,32 +586,84 @@ def _set_selection(selected: bool) -> None:
     state["version"] += 1
 
 
+FILTER_KEYS = {
+    "suppliers_filter_country": [],
+    "suppliers_filter_city": [],
+    "suppliers_filter_profile": [],
+    "suppliers_filter_service": "",
+    "suppliers_filter_name": "",
+}
+
+
+def _clear_filters() -> None:
+    """Roda antes da tela (on_click): pode zerar os campos do formulário."""
+    for key, empty in FILTER_KEYS.items():
+        st.session_state[key] = list(empty) if isinstance(empty, list) else empty
+
+
+def _matches_service(
+    wanted: str,
+    supplier: dict,
+) -> bool:
+    """Mesmos sinônimos da ÁGORA: "hotel" acha "Hospedagem", "receptivo"
+    acha "DMC"."""
+    from services.fornecedores import _service_terms
+
+    text = normalize(f"{supplier.get('service') or ''} {supplier.get('name') or ''}")
+    return any(term in text for term in _service_terms(wanted))
+
+
 def _filtered(suppliers: list[dict]) -> list[dict]:
-    """Filtros: país, cidade, perfil (listas) e serviço/nome (texto)."""
+    """Filtros num formulário: valem ao clicar em Buscar ou apertar Enter
+    (antes, o texto só valia ao sair do campo e o "Mostrando 0 de 1" ficava
+    com o filtro antigo)."""
     countries = sorted({str(item.get("country") or "") for item in suppliers} - {""})
     cities = sorted({str(item.get("city") or "") for item in suppliers} - {""})
-    country_column, city_column, profile_column = st.columns(3)
-    chosen_countries = country_column.multiselect(
-        "País",
-        options=countries,
-        placeholder="Todos",
-        key="suppliers_filter_country",
-    )
-    chosen_cities = city_column.multiselect(
-        "Cidade",
-        options=cities,
-        placeholder="Todas",
-        key="suppliers_filter_city",
-    )
-    chosen_profiles = profile_column.multiselect(
-        "Perfil",
-        options=list(PROFILES),
-        placeholder="Todos",
-        key="suppliers_filter_profile",
-    )
-    service_column, name_column = st.columns(2)
-    service = normalize(service_column.text_input("Serviço", placeholder="Ex.: hotel, guia", key="suppliers_filter_service"))
-    name = normalize(name_column.text_input("Nome", key="suppliers_filter_name"))
+
+    with st.form("suppliers_filters", border=False, enter_to_submit=True):
+        country_column, city_column, profile_column = st.columns(3)
+        country_column.multiselect(
+            "País",
+            options=countries,
+            placeholder="Todos",
+            key="suppliers_filter_country",
+        )
+        city_column.multiselect(
+            "Cidade",
+            options=cities,
+            placeholder="Todas",
+            key="suppliers_filter_city",
+        )
+        profile_column.multiselect(
+            "Perfil",
+            options=list(PROFILES),
+            placeholder="Todos",
+            key="suppliers_filter_profile",
+        )
+        service_column, name_column, search_column, clear_column = st.columns(
+            [3, 3, 1, 1],
+            vertical_alignment="bottom",
+        )
+        service_column.text_input("Serviço", placeholder="Ex.: hotel, guia", key="suppliers_filter_service")
+        name_column.text_input("Nome", key="suppliers_filter_name")
+        search_column.form_submit_button(
+            "Buscar",
+            icon=":material/search:",
+            type="primary",
+            use_container_width=True,
+        )
+        clear_column.form_submit_button(
+            "Limpar",
+            icon=":material/filter_alt_off:",
+            use_container_width=True,
+            on_click=_clear_filters,
+        )
+
+    chosen_countries = st.session_state.get("suppliers_filter_country") or []
+    chosen_cities = st.session_state.get("suppliers_filter_city") or []
+    chosen_profiles = st.session_state.get("suppliers_filter_profile") or []
+    service = normalize(st.session_state.get("suppliers_filter_service"))
+    name = normalize(st.session_state.get("suppliers_filter_name"))
 
     return [
         item
@@ -619,7 +671,7 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
         if (not chosen_countries or item.get("country") in chosen_countries)
         and (not chosen_cities or item.get("city") in chosen_cities)
         and (not chosen_profiles or item.get("profile") in chosen_profiles)
-        and (not service or service in normalize(item.get("service")))
+        and (not service or _matches_service(service, item))
         and (not name or name in normalize(item.get("name")))
     ]
 
@@ -661,6 +713,11 @@ def _show_registered(
         return
 
     visible = _filtered(suppliers)
+
+    if not visible:
+        # No lugar da tabela vazia (que mostrava "empty", em inglês).
+        st.info("Nenhum fornecedor encontrado com esses filtros.")
+        return
 
     if len(visible) != len(suppliers):
         st.caption(f"Mostrando {len(visible)} de {len(suppliers)}.")

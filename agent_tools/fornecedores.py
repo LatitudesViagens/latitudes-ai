@@ -86,17 +86,26 @@ def buscar_fornecedores(
             ),
         }
 
-    lines = [describe_supplier(supplier) for supplier in found]
+    blocks = [describe_supplier(supplier) for supplier in found]
 
     if total > len(found):
-        lines.append(f"(mais {total - len(found)} não listados; peça um serviço ou cidade para filtrar)")
+        blocks.append(f"(mais {total - len(found)} não listados; peça um serviço ou cidade para filtrar)")
+
+    # A resposta passa a ter dados de fornecedores: a tela esconde o botão
+    # "Sugerir para a base de conhecimento" (a base é lida por todos).
+    turno.used_suppliers = True
 
     return {
         "status": "ok",
-        "fornecedores": "\n".join(lines),
+        "fornecedores": "\n\n".join(blocks),
         "mensagem": (
             "Apresente estes numa seção 'Fornecedores da Latitudes', como "
-            "sugestão no chat (não gere arquivo). Use só os dados listados; "
+            "sugestão no chat (não gere arquivo), copiando cada bloco "
+            "exatamente como veio, em Markdown: o nome em negrito e, abaixo, "
+            "um dado por linha começando com '- ' (hífen e espaço; sem ele "
+            "as linhas se juntam numa só na tela), e uma linha em branco "
+            "entre um fornecedor e outro. Nunca junte os dados numa linha só. "
+            "Use só os dados listados; "
             "não invente contato, estrelas nem serviços. Termine oferecendo "
             "buscar na internet outros fornecedores do local; só pesquise "
             "se a pessoa pedir ou aceitar e, nesse caso, apresente o "

@@ -271,8 +271,16 @@ class FerramentaTest(unittest.TestCase):
             resultado = buscar_fornecedores("Egito", "hotel")
 
         self.assertEqual(resultado["status"], "ok")
-        self.assertIn("Palácio do Deserto — Hospedagem — Luxor, Egito — 5 estrelas — perfil Luxo", resultado["fornecedores"])
-        self.assertIn("contato: nilo.example", resultado["fornecedores"])
+        # Um dado por linha, com o nome em negrito.
+        self.assertIn(
+            "**Palácio do Deserto**\n- Serviço: Hospedagem\n- Local: Luxor, Egito\n- Estrelas: 5\n- Perfil: Luxo",
+            resultado["fornecedores"],
+        )
+        self.assertIn("- Contato: nilo.example", resultado["fornecedores"])
+        # A resposta fica marcada: a tela não oferece "Sugerir para a base".
+        from services.contexto_turno import TURNO_ATUAL
+
+        self.assertTrue(TURNO_ATUAL.get().used_suppliers)
 
     def test_nenhum_encontrado(self):
         from agent_tools.fornecedores import buscar_fornecedores
@@ -302,6 +310,9 @@ class AcessoTest(unittest.TestCase):
 
         self.assertEqual(resultado["status"], "sem_acesso")
         self.assertNotIn("fornecedores", resultado)
+        from services.contexto_turno import TURNO_ATUAL
+
+        self.assertFalse(TURNO_ATUAL.get().used_suppliers)
         self.assertNotIn("Palácio", str(resultado))
         self.assertIn("Não mencione cadastro", resultado["mensagem"])
 
