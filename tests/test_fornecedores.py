@@ -11,6 +11,7 @@ from services.fornecedores import (
     _parse_suppliers,
     normalize,
     search_suppliers,
+    split_duplicates,
     supplier_key,
 )
 from tests.apoio import bloquear_internet
@@ -105,6 +106,31 @@ class LeituraDaIATest(unittest.TestCase):
         self.assertEqual(
             supplier_key({"name": "Palácio", "city": "Luxor", "country": "Egito"}),
             supplier_key({"name": "palacio", "city": "LUXOR", "country": "egito"}),
+        )
+
+
+class DuplicidadeTest(unittest.TestCase):
+    def test_ja_na_base_e_repetido_na_lista(self):
+        na_base = {supplier_key({"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito"})}
+        novos, repetidos = split_duplicates(
+            rows=[
+                {"name": "HOTEL NILO AZUL", "city": "cairo", "country": "Egito"},
+                {"name": "Palácio do Deserto", "city": "Luxor", "country": "Egito"},
+                {"name": "Palacio do Deserto", "city": "Luxor", "country": "egito"},
+                {"name": "Palácio do Deserto", "city": "Assuã", "country": "Egito"},
+            ],
+            existing_keys=na_base,
+        )
+        self.assertEqual(
+            [(item["name"], item["city"]) for item in novos],
+            [("Palácio do Deserto", "Luxor"), ("Palácio do Deserto", "Assuã")],
+        )
+        self.assertEqual(len(repetidos), 2)
+
+    def test_celula_vazia_da_tabela(self):
+        self.assertEqual(
+            supplier_key({"name": "Faraó", "city": float("nan"), "country": "Egito"}),
+            supplier_key({"name": "farao", "city": None, "country": "EGITO"}),
         )
 
 

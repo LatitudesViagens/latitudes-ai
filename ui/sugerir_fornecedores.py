@@ -61,6 +61,13 @@ SUGGESTION_REQUEST = re.compile(
 # disser isso, o botão aparece mesmo que a frase da pessoa fuja do padrão.
 BUTTON_LABEL = "Sugerir fornecedor para a base"
 
+# Para quem usa, quem aprova não aparece (pedido da Isabelle, 20/10/2026):
+# o texto é genérico. Quem aprova é o TI, no Painel de controle.
+SUGGESTION_REVIEW_NOTE = (
+    "Após o envio, os fornecedores serão analisados e, depois de aprovados, "
+    "passam a ser usados nas operações."
+)
+
 
 def asked_to_suggest(question: str, answer: str = "") -> bool:
     from services.fornecedores import normalize
@@ -122,6 +129,14 @@ def text_for_privacy_check(rows: list[dict]) -> str:
         )
 
     return "\n".join(lines)
+
+
+def _approved_keys(client: Client) -> set[tuple[str, str, str]]:
+    """Fornecedores já aprovados (a mesma lista que a ÁGORA consulta)."""
+    from services.fornecedores import ensure_suppliers_loaded, loaded_suppliers, supplier_key
+
+    ensure_suppliers_loaded(client)
+    return {supplier_key(item) for item in loaded_suppliers() or []}
 
 
 def _state_key(message_id: str) -> str:
@@ -240,27 +255,49 @@ def _suggestion_dialog(
 
     st.caption(
         "A ficha leva só nome, cidade, país, estrelas, serviço e contato "
-        "geral da empresa (sem preços, propostas ou contatos pessoais). O TI "
-        "aprova antes de a ÁGORA usar."
+        "geral da empresa (sem preços, propostas ou contatos pessoais). "
+        + SUGGESTION_REVIEW_NOTE
     )
 
+    from services.fornecedores import split_duplicates, supplier_key
+
+    # Quem já está na base vem desmarcado e não é enviado de novo.
+    approved_keys = _approved_keys(client)
     table = pandas.DataFrame(
-        [{"include": True, **supplier} for supplier in suppliers],
-        columns=list(COLUMNS),
+        [
+            {
+                "include": supplier_key(supplier) not in approved_keys,
+                **supplier,
+                "already": "Sim" if supplier_key(supplier) in approved_keys else "",
+            }
+            for supplier in suppliers
+        ],
+        columns=[*COLUMNS, "already"],
     )
+    config = supplier_columns_config()
+    config["already"] = st.column_config.TextColumn("Já na base", disabled=True, width="small")
     edited = st.data_editor(
         table,
-        column_config=supplier_columns_config(),
+        column_config=config,
         hide_index=True,
         num_rows="dynamic",
         width="stretch",
         key=f"suppliers_editor_{message_id}",
     )
-    rows = [
-        row
-        for row in edited.to_dict(orient="records")
-        if is_included(row)
-    ]
+    rows, duplicates = split_duplicates(
+        rows=[
+            row
+            for row in edited.to_dict(orient="records")
+            if is_included(row)
+        ],
+        existing_keys=approved_keys,
+    )
+
+    if duplicates:
+        st.info(
+            f"{len(duplicates)} fornecedor(es) já está(ão) na base ou "
+            "repetido(s) na tabela e não será(ão) enviado(s) de novo."
+        )
 
     if not st.button(
         f"Enviar {len(rows)} para aprovação",
@@ -320,7 +357,7 @@ def _suggestion_dialog(
 
     st.session_state[_state_key(message_id)] = True
     st.session_state.pop(extraction_key, None)
-    st.toast(f"{sent} fornecedor(es) enviado(s) para aprovação do TI.")
+    st.toast(f"{sent} fornecedor(es) enviado(s). {SUGGESTION_REVIEW_NOTE}")
     st.rerun()
 
 
@@ -368,8 +405,7 @@ def show_supplier_suggestion_button(
         key=f"suppliers_suggest_{message_id}",
         help=(
             "Abre a ficha (nome, cidade, país, estrelas, serviço e contato "
-            "geral) para você conferir e enviar. Só passa a ser usado depois "
-            "da aprovação do TI."
+            "geral) para você conferir e enviar. " + SUGGESTION_REVIEW_NOTE
         ),
     ):
         _suggestion_dialog(

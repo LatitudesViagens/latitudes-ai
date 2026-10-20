@@ -308,7 +308,7 @@ def build_context_message(match: KnowledgeMatch) -> dict:
     return {
         "role": "system",
         "content": (
-            "Há uma resposta APROVADA pelo TI da Latitudes na base de "
+            "Há uma resposta APROVADA pela Latitudes na base de "
             "conhecimento para uma pergunta parecida. Use-a como referência "
             "principal e adapte ao que a pessoa perguntou agora; não diga que "
             "existe uma base nem copie se não couber.\n\n"

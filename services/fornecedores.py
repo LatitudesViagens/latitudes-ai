@@ -150,11 +150,35 @@ def _chunks(text: str) -> list[str]:
 
 
 def supplier_key(supplier: dict) -> tuple[str, str, str]:
-    return (
-        normalize(supplier.get("name")),
-        normalize(supplier.get("city")),
-        normalize(supplier.get("country")),
-    )
+    """Mesmo fornecedor = mesmo nome, cidade e país, sem acentos e sem
+    maiúsculas ("Palácio do Deserto, Luxor" = "palacio do deserto, LUXOR")."""
+    def text(name: str) -> str:
+        value = supplier.get(name)
+        # Célula vazia da tabela de edição chega como NaN.
+        return "" if isinstance(value, float) and value != value else normalize(value)
+
+    return (text("name"), text("city"), text("country"))
+
+
+def split_duplicates(
+    rows: list[dict],
+    existing_keys: set[tuple[str, str, str]],
+) -> tuple[list[dict], list[dict]]:
+    """(novos, repetidos): repetido é quem já está em existing_keys ou já
+    apareceu antes na própria lista."""
+    seen = set(existing_keys)
+    new_rows, duplicates = [], []
+
+    for row in rows:
+        key = supplier_key(row)
+
+        if key in seen:
+            duplicates.append(row)
+        else:
+            seen.add(key)
+            new_rows.append(row)
+
+    return new_rows, duplicates
 
 
 def extract_suppliers(

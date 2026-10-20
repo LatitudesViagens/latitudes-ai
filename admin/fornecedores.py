@@ -23,7 +23,7 @@ from database.suppliers import (
     list_suppliers,
     review_supplier,
 )
-from services.fornecedores import forget_suppliers_cache, supplier_key
+from services.fornecedores import forget_suppliers_cache, split_duplicates, supplier_key
 from ui.sugerir_fornecedores import COLUMNS, incomplete_rows, supplier_columns_config
 
 FLASH_KEY = "admin_suppliers_flash"
@@ -161,8 +161,24 @@ def _show_pending(
         if missing:
             st.error(f"Preencha nome, país e serviço em {missing} linha(s).")
         else:
-            done = _review(client=client, rows=selected, status=STATUS_APPROVED)
-            _flash(f"{done} fornecedor(es) aprovado(s) e incluído(s) na base.")
+            # Já na base (ou repetido na seleção): não entra duas vezes.
+            new_rows, duplicates = split_duplicates(
+                rows=selected,
+                existing_keys=approved_keys,
+            )
+            done = _review(client=client, rows=new_rows, status=STATUS_APPROVED)
+            _review(
+                client=client,
+                rows=duplicates,
+                status=STATUS_REJECTED,
+                note="Duplicado: já está na base.",
+            )
+            message = f"{done} fornecedor(es) aprovado(s) e incluído(s) na base."
+
+            if duplicates:
+                message += f" {len(duplicates)} já estava(m) na base e foi(ram) descartado(s) como duplicado(s)."
+
+            _flash(message)
 
     if reject_column.button(
         f"Rejeitar selecionados ({len(selected)})",
@@ -179,6 +195,7 @@ def _show_approved(
     client: Client,
     approved: list[dict],
 ) -> None:
+    all_approved = approved
     st.subheader(f"Fornecedores na base ({len(approved)})")
 
     if not approved:
@@ -230,9 +247,22 @@ def _show_approved(
         key="suppliers_save",
     ):
         missing = incomplete_rows(changed)
+        changed_ids = {row["id"] for row in changed}
+        # A edição não pode transformar um fornecedor em cópia de outro.
+        _new_rows, duplicates = split_duplicates(
+            rows=changed,
+            existing_keys={
+                supplier_key(item)
+                for item in all_approved
+                if str(item["id"]) not in changed_ids
+            },
+        )
 
         if missing:
             st.error(f"Preencha nome, país e serviço em {missing} linha(s).")
+        elif duplicates:
+            names = ", ".join(str(row.get("name")) for row in duplicates[:5])
+            st.error(f"Já existe outro fornecedor com o mesmo nome, cidade e país: {names}.")
         else:
             done = _review(client=client, rows=changed, status=STATUS_APPROVED)
             _flash(f"{done} fornecedor(es) atualizado(s).")
@@ -253,7 +283,10 @@ def _show_approved(
         _flash(f"{done} fornecedor(es) retirado(s) da base.")
 
 
-def _show_new_supplier_form(client: Client) -> None:
+def _show_new_supplier_form(
+    client: Client,
+    approved_keys: set[tuple[str, str, str]],
+) -> None:
     st.subheader("Novo fornecedor")
 
     with st.form("suppliers_new_form", clear_on_submit=True, border=True):
@@ -281,6 +314,10 @@ def _show_new_supplier_form(client: Client) -> None:
 
     if incomplete_rows([supplier]):
         st.warning("Preencha nome, país e serviço.")
+        return
+
+    if supplier_key(supplier) in approved_keys:
+        st.warning("Este fornecedor (mesmo nome, cidade e país) já está na base.")
         return
 
     try:
@@ -315,12 +352,16 @@ def show_suppliers_section(client: Client) -> None:
         )
         return
 
+    approved_keys = {supplier_key(item) for item in approved}
     _show_pending(
         client=client,
         pending=pending,
-        approved_keys={supplier_key(item) for item in approved},
+        approved_keys=approved_keys,
     )
     st.divider()
     _show_approved(client=client, approved=approved)
     st.divider()
-    _show_new_supplier_form(client)
+    _show_new_supplier_form(
+        client=client,
+        approved_keys=approved_keys,
+    )

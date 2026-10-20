@@ -52,9 +52,10 @@ def buscar_fornecedores(
             "status": "nenhum",
             "mensagem": (
                 "Nenhum fornecedor da Latitudes cadastrado para este destino "
-                "e serviço. Diga isso em uma frase; se for útil, sugira "
-                "opções da internet marcadas como 'encontradas na internet, "
-                "não homologadas pela Latitudes'."
+                "e serviço. Diga isso em uma frase e ofereça os dois "
+                "caminhos: a pessoa sugerir um fornecedor que conheça "
+                "(escrevendo 'quero sugerir o fornecedor ...') ou você "
+                "buscar opções na internet. Não pesquise sem ela aceitar."
             ),
         }
 
@@ -67,11 +68,10 @@ def buscar_fornecedores(
         "status": "ok",
         "fornecedores": "\n".join(lines),
         "mensagem": (
-            "Apresente estes primeiro, numa seção 'Fornecedores da "
-            "Latitudes', como sugestão no chat (não gere arquivo). Use só os "
-            "dados listados; não invente contato, estrelas nem serviços. "
-            "Sugestões da internet, se houver, vêm depois e separadas, "
-            "marcadas como 'encontradas na internet, não homologadas pela "
-            "Latitudes'."
+            "Apresente estes numa seção 'Fornecedores da Latitudes', como "
+            "sugestão no chat (não gere arquivo). Use só os dados listados; "
+            "não invente contato, estrelas nem serviços. Termine oferecendo "
+            "buscar na internet outros fornecedores do local; só pesquise "
+            "se a pessoa pedir ou aceitar."
         ),
     }
