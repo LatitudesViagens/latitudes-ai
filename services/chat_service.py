@@ -872,14 +872,22 @@ async def run_turn_stream(
 
     from services import agent_runner
     from services.contexto_turno import TURNO_ATUAL, TurnoAtual
-    from services.fornecedores import ensure_suppliers_loaded
+    from services.fornecedores import ensure_suppliers_loaded, user_can_read_suppliers
 
     step_done("carregar_ia")
 
-    # A ferramenta buscar_fornecedores roda em outra thread e não pode usar a
-    # conexão do banco: a lista de aprovados fica na memória (relida a cada
-    # 10 minutos; nas outras perguntas não vai ao banco).
-    ensure_suppliers_loaded(client)
+    # Fornecedores só para a equipe de Operações e o TI (migração 015). A
+    # ferramenta roda em outra thread e não pode usar a conexão do banco: a
+    # lista fica na memória (relida a cada 10 minutos) e só é carregada por
+    # quem tem acesso (para os outros, o RLS devolveria a lista vazia).
+    can_read_suppliers = user_can_read_suppliers(
+        client=client,
+        user_id=str(user_id),
+    )
+
+    if can_read_suppliers:
+        ensure_suppliers_loaded(client)
+
     step_done("fornecedores")
 
     # Ferramentas que consultam sistemas da Latitudes anotam as consultas
@@ -887,6 +895,7 @@ async def run_turn_stream(
     turno_atual = TurnoAtual(
         user_id=str(user_id),
         conversation_id=str(conversation_id),
+        can_read_suppliers=can_read_suppliers,
     )
     TURNO_ATUAL.set(turno_atual)
 

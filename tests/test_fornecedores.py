@@ -1,10 +1,10 @@
-"""Fornecedores da base de conhecimento: busca, leitura das fichas e travas
-(dados fictícios; nada chama a IA nem o banco)."""
+"""Fornecedores (só equipe de Operações e TI): busca, leitura das fichas,
+travas e acesso (dados fictícios; nada chama a IA nem o banco)."""
 
 import unittest
 from unittest import mock
 
-from database.suppliers import _record, clean_stars
+from database.suppliers import _record, clean_profile, clean_stars
 from services import fornecedores
 from services.fornecedores import (
     _destination_parts,
@@ -15,9 +15,8 @@ from services.fornecedores import (
     supplier_key,
 )
 from tests.apoio import bloquear_internet
-from ui.sugerir_fornecedores import (
-    _duplicate_messages,
-    asked_to_suggest,
+from admin.fornecedores import (
+    duplicate_messages,
     incomplete_rows,
     is_included,
     supplier_frame,
@@ -42,8 +41,8 @@ def _carregados(*linhas: dict) -> list[dict]:
 
 
 LISTA = _carregados(
-    {"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito", "stars": 4, "service": "Hotel", "contact": "nilo.example"},
-    {"name": "Palácio do Deserto", "city": "Luxor", "country": "Egito", "stars": 5, "service": "Hospedagem", "contact": None},
+    {"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito", "stars": 4, "profile": "Superior", "service": "Hotel", "contact": "nilo.example"},
+    {"name": "Palácio do Deserto", "city": "Luxor", "country": "Egito", "stars": 5, "profile": "Luxo", "service": "Hospedagem", "contact": None},
     {"name": "Faraó Receptivo", "city": "", "country": "Egito", "stars": None, "service": "Receptivo (DMC)", "contact": None},
     {"name": "Lisboa Tours", "city": "Lisboa", "country": "Portugal", "stars": None, "service": "Guia em português", "contact": None},
     {"name": "Big Apple Bus", "city": "Nova York", "country": "Estados Unidos", "stars": None, "service": "Transporte com ônibus", "contact": None},
@@ -93,12 +92,12 @@ class LeituraDaIATest(unittest.TestCase):
     def test_le_o_json_e_limpa_os_campos(self):
         texto = (
             'Aqui está: {"fornecedores": [{"nome": "  Hotel  Nilo ", "cidade": "Cairo", '
-            '"pais": "Egito", "estrelas": "4", "servico": "Hotel", "contato": ""}, '
+            '"pais": "Egito", "estrelas": "4", "perfil": "premium", "servico": "Hotel", "contato": ""}, '
             '{"nome": "", "pais": "Egito"}]}'
         )
         self.assertEqual(
             _parse_suppliers(texto),
-            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "stars": 4, "service": "Hotel", "contact": ""}],
+            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "stars": 4, "profile": "Luxo", "service": "Hotel", "contact": ""}],
         )
 
     def test_resposta_sem_json(self):
@@ -129,25 +128,20 @@ class DuplicidadeTest(unittest.TestCase):
         )
         self.assertEqual(len(repetidos), 2)
 
-    def test_avisos_do_formulario(self):
-        existentes = {
-            supplier_key({"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito"}): "já está na base",
-            supplier_key({"name": "Faraó Receptivo", "city": "", "country": "Egito"}): "já foi sugerido e aguarda análise",
-        }
-        avisos = _duplicate_messages(
+    def test_avisos_do_cadastro(self):
+        cadastrados = {supplier_key({"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito"})}
+        avisos = duplicate_messages(
             rows=[
                 {"name": "hotel nilo azul", "city": "CAIRO", "country": "Egito"},
-                {"name": "Farao Receptivo", "city": "", "country": "egito"},
                 {"name": "Hotel Novo", "city": "Luxor", "country": "Egito"},
                 {"name": "Hotel Novo", "city": "Luxor", "country": "Egito"},
             ],
-            existing=existentes,
+            existing_keys=cadastrados,
         )
         self.assertEqual(
             avisos,
             [
-                "hotel nilo azul (CAIRO, Egito) já está na base.",
-                "Farao Receptivo (egito) já foi sugerido e aguarda análise.",
+                "hotel nilo azul (CAIRO, Egito) já está cadastrado.",
                 "Hotel Novo (Luxor, Egito) aparece mais de uma vez.",
             ],
         )
@@ -157,6 +151,27 @@ class DuplicidadeTest(unittest.TestCase):
             supplier_key({"name": "Faraó", "city": float("nan"), "country": "Egito"}),
             supplier_key({"name": "farao", "city": None, "country": "EGITO"}),
         )
+
+
+class PerfilTest(unittest.TestCase):
+    def test_nomes_e_sinonimos(self):
+        self.assertEqual(clean_profile("luxo"), "Luxo")
+        self.assertEqual(clean_profile("Premium / boutique"), "Luxo")
+        self.assertEqual(clean_profile("alto padrão"), "Superior")
+        self.assertEqual(clean_profile("intermediario"), "Intermediário")
+        self.assertEqual(clean_profile("bom custo-benefício"), "Intermediário")
+        self.assertEqual(clean_profile("grupos mais simples"), "Econômico")
+        self.assertEqual(clean_profile("ECONÔMICO"), "Econômico")
+        self.assertIsNone(clean_profile("Não informado"))
+        self.assertIsNone(clean_profile(""))
+        self.assertIsNone(clean_profile(float("nan")))
+
+    def test_filtro_por_perfil(self):
+        encontrados, _total = search_suppliers(LISTA, destination="Egito", profile="luxo")
+        self.assertEqual([item["name"] for item in encontrados], ["Palácio do Deserto"])
+        # Perfil que não é da lista não filtra (texto solto da IA).
+        encontrados, _total = search_suppliers(LISTA, destination="Egito", profile="qualquer")
+        self.assertEqual(len(encontrados), 3)
 
 
 class FichaTest(unittest.TestCase):
@@ -173,7 +188,7 @@ class FichaTest(unittest.TestCase):
         )
         self.assertEqual(
             registro,
-            {"name": "X", "city": None, "country": "Egito", "stars": 3, "service": "Hotel", "contact": None},
+            {"name": "X", "city": None, "country": "Egito", "stars": 3, "profile": None, "service": "Hotel", "contact": None},
         )
 
     def test_linhas_incompletas(self):
@@ -196,33 +211,7 @@ class FichaTest(unittest.TestCase):
         self.assertIn("não clientes", texto)
 
 
-class PedidoSemArquivoTest(unittest.TestCase):
-    def test_reconhece_pedidos_de_sugestao(self):
-        for frase in (
-            "Quero sugerir esse fornecedor para a base de conhecimento",
-            "Gostaria de cadastrar o Hotel Nilo, no Cairo",
-            "Pode incluir na base o receptivo Faraó?",
-            "Sugestão de fornecedor: Lisboa Tours, guias",
-            "quero adicionar dois hotéis do Egito",
-        ):
-            self.assertTrue(asked_to_suggest(frase), frase)
-
-    def test_nao_confunde_com_pedido_de_fornecedores(self):
-        for frase in (
-            "Quais os principais fornecedores para o Egito?",
-            "Me indique hotéis em Lisboa",
-            "Monte um roteiro de 5 dias no Cairo",
-        ):
-            self.assertFalse(asked_to_suggest(frase), frase)
-
-    def test_resposta_que_aponta_o_botao(self):
-        self.assertTrue(
-            asked_to_suggest(
-                "tenho um contato bom no Cairo",
-                answer="Use o botão 'Sugerir fornecedor para a base' abaixo.",
-            )
-        )
-
+class TabelaTest(unittest.TestCase):
     def test_ficha_em_branco_tem_colunas_de_texto(self):
         # Coluna toda vazia virava número (NaN) e a tabela de edição dava
         # StreamlitAPIException ao abrir a ficha em branco (20/10/2026).
@@ -246,28 +235,98 @@ class PedidoSemArquivoTest(unittest.TestCase):
         self.assertFalse(is_included({"include": None, "name": float("nan")}))
 
 
+def _turno(pode_ver: bool):
+    """Turno de quem pergunta: o acesso vem do banco, nunca da IA."""
+    from services.contexto_turno import TURNO_ATUAL, TurnoAtual
+
+    return TURNO_ATUAL.set(
+        TurnoAtual(
+            user_id="pessoa",
+            conversation_id="conversa",
+            can_read_suppliers=pode_ver,
+        )
+    )
+
+
 class FerramentaTest(unittest.TestCase):
+    def tearDown(self):
+        from services.contexto_turno import TURNO_ATUAL
+
+        TURNO_ATUAL.set(None)
+
     def test_sem_lista_carregada_avisa_indisponivel(self):
         from agent_tools.fornecedores import buscar_fornecedores
+
+        _turno(pode_ver=True)
 
         with mock.patch.object(fornecedores, "_cache", None):
             self.assertEqual(buscar_fornecedores("Egito")["status"], "indisponivel")
 
-    def test_devolve_os_da_latitudes(self):
+    def test_operacoes_recebe_os_da_latitudes(self):
         from agent_tools.fornecedores import buscar_fornecedores
+
+        _turno(pode_ver=True)
 
         with mock.patch.object(fornecedores, "_cache", (0.0, LISTA)):
             resultado = buscar_fornecedores("Egito", "hotel")
 
         self.assertEqual(resultado["status"], "ok")
-        self.assertIn("Palácio do Deserto — Hospedagem — Luxor, Egito — 5 estrelas", resultado["fornecedores"])
+        self.assertIn("Palácio do Deserto — Hospedagem — Luxor, Egito — 5 estrelas — perfil Luxo", resultado["fornecedores"])
         self.assertIn("contato: nilo.example", resultado["fornecedores"])
 
     def test_nenhum_encontrado(self):
         from agent_tools.fornecedores import buscar_fornecedores
 
+        _turno(pode_ver=True)
+
         with mock.patch.object(fornecedores, "_cache", (0.0, LISTA)):
             self.assertEqual(buscar_fornecedores("Japão")["status"], "nenhum")
+
+
+class AcessoTest(unittest.TestCase):
+    """Quem não é de Operações (nem TI) não recebe nada, mesmo com a lista
+    na memória do servidor (carregada por outra pessoa)."""
+
+    def tearDown(self):
+        from services.contexto_turno import TURNO_ATUAL
+
+        TURNO_ATUAL.set(None)
+
+    def test_fora_de_operacoes_nao_recebe_fornecedores(self):
+        from agent_tools.fornecedores import buscar_fornecedores
+
+        _turno(pode_ver=False)
+
+        with mock.patch.object(fornecedores, "_cache", (0.0, LISTA)):
+            resultado = buscar_fornecedores("Egito", "hotel", "Luxo")
+
+        self.assertEqual(resultado["status"], "sem_acesso")
+        self.assertNotIn("fornecedores", resultado)
+        self.assertNotIn("Palácio", str(resultado))
+        self.assertIn("Não mencione cadastro", resultado["mensagem"])
+
+    def test_sem_turno_nao_recebe_fornecedores(self):
+        from agent_tools.fornecedores import buscar_fornecedores
+
+        with mock.patch.object(fornecedores, "_cache", (0.0, LISTA)):
+            self.assertEqual(buscar_fornecedores("Egito")["status"], "sem_acesso")
+
+    def test_acesso_conferido_uma_vez_a_cada_5_minutos(self):
+        chamadas = []
+
+        def conferir(client):
+            chamadas.append(client)
+            return True
+
+        with (
+            mock.patch("database.roles.can_read_suppliers", conferir),
+            mock.patch.object(fornecedores, "_access_cache", {}),
+        ):
+            self.assertTrue(fornecedores.user_can_read_suppliers(client="c", user_id="u1"))
+            self.assertTrue(fornecedores.user_can_read_suppliers(client="c", user_id="u1"))
+            self.assertTrue(fornecedores.user_can_read_suppliers(client="c", user_id="u2"))
+
+        self.assertEqual(len(chamadas), 2)
 
 
 if __name__ == "__main__":

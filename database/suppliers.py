@@ -1,6 +1,6 @@
-"""Fornecedores da base de conhecimento (migração 014). As políticas RLS
-garantem: qualquer pessoa só SUGERE (entra como pendente); só o TI aprova,
-edita, rejeita e apaga; todos leem os aprovados."""
+"""Fornecedores (migrações 014 e 015). As políticas RLS garantem: só a
+equipe de Operações e o TI leem; só coordenadores de Operações e o TI
+cadastram (já aprovado), editam e retiram."""
 
 from datetime import datetime, timezone
 
@@ -10,13 +10,25 @@ STATUS_PENDING = "pendente"
 STATUS_APPROVED = "aprovada"
 STATUS_REJECTED = "rejeitada"
 
-# Campos da ficha (combinados com a Isabelle em 20/10/2026).
-FIELDS = ("name", "city", "country", "stars", "service", "contact")
+# Campos da ficha (combinados com a Isabelle em 20/10/2026; perfil na 015).
+FIELDS = ("name", "city", "country", "stars", "profile", "service", "contact")
 
 SUPPLIER_COLUMNS = (
-    "id,name,city,country,stars,service,contact,status,source_file,"
+    "id,name,city,country,stars,profile,service,contact,status,source_file,"
     "source_message_id,suggested_by,reviewed_by,reviewed_at,created_at"
 )
+
+# Perfis do fornecedor, do mais caro ao mais simples (mesma lista da
+# restrição da migração 015; trocar um nome exige trocar lá também).
+PROFILES = ("Luxo", "Superior", "Intermediário", "Econômico")
+
+# Outras palavras para os mesmos perfis (sem acento, minúsculas).
+PROFILE_SYNONYMS = {
+    "Luxo": ("luxo", "luxuoso", "luxury", "premium", "boutique", "exclusivo"),
+    "Superior": ("superior", "alto padrao", "primeira linha", "executivo", "sofisticado"),
+    "Intermediário": ("intermediario", "medio", "conforto", "turistico", "custo beneficio"),
+    "Econômico": ("economico", "simples", "basico", "budget", "hostel", "estudantes", "baixo custo"),
+}
 
 
 def clean_stars(value) -> int | None:
@@ -27,6 +39,37 @@ def clean_stars(value) -> int | None:
         return None
 
     return stars if 1 <= stars <= 5 else None
+
+
+def _plain(text) -> str:
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFKD", str(text or ""))
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(without_accents.lower().replace("-", " ").split())
+
+
+def clean_profile(value) -> str | None:
+    """Um dos PROFILES ("luxo", "Premium", "econômico" → nome oficial); o
+    resto (vazio, "Não informado", texto sem perfil) vira nulo."""
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+
+    plain = _plain(value)
+
+    if not plain:
+        return None
+
+    for profile in PROFILES:
+        if plain == _plain(profile):
+            return profile
+
+    # Do mais caro ao mais simples: "alto padrão" é Superior, não outro.
+    for profile in PROFILES:
+        if any(word in plain for word in PROFILE_SYNONYMS[profile]):
+            return profile
+
+    return None
 
 
 def _record(supplier: dict) -> dict:
@@ -40,6 +83,10 @@ def _record(supplier: dict) -> dict:
             record[name] = clean_stars(value)
             continue
 
+        if name == "profile":
+            record[name] = clean_profile(value)
+            continue
+
         # Célula vazia da tabela de edição chega como NaN (float).
         if isinstance(value, float) and value != value:
             value = None
@@ -50,23 +97,27 @@ def _record(supplier: dict) -> dict:
     return record
 
 
-def suggest_suppliers(
+def create_suppliers(
     client: Client,
     suppliers: list[dict],
-    source_message_id: str | None,
-    source_file: str | None,
+    reviewer_id: str,
+    source_file: str | None = None,
 ) -> int:
-    """Envia as fichas para aprovação do TI (todas pendentes)."""
+    """Cadastra fornecedores já aprovados (coordenadores de Operações e TI;
+    o RLS da migração 015 barra os outros). Um envio só, para a planilha."""
+    reviewed_at = datetime.now(timezone.utc).isoformat()
     records = []
 
     for supplier in suppliers:
         record = _record(supplier)
-        record["status"] = STATUS_PENDING
-        record["source_file"] = (source_file or "")[:200] or None
-
-        if source_message_id:
-            record["source_message_id"] = str(source_message_id)
-
+        record.update(
+            {
+                "status": STATUS_APPROVED,
+                "source_file": (source_file or "")[:200] or None,
+                "reviewed_by": str(reviewer_id),
+                "reviewed_at": reviewed_at,
+            }
+        )
         records.append(record)
 
     if not records:
@@ -76,23 +127,9 @@ def suggest_suppliers(
     return len(response.data or [])
 
 
-def has_suggestions_for_message(
-    client: Client,
-    source_message_id: str,
-) -> bool:
-    response = (
-        client.table("suppliers")
-        .select("id")
-        .eq("source_message_id", str(source_message_id))
-        .limit(1)
-        .execute()
-    )
-    return bool(response.data)
-
-
 def list_suppliers(
     client: Client,
-    status: str,
+    status: str = STATUS_APPROVED,
     limit: int = 2000,
 ) -> list[dict]:
     response = (
@@ -113,29 +150,12 @@ def list_approved_suppliers(client: Client) -> list[dict]:
     servidor, services/fornecedores.py)."""
     response = (
         client.table("suppliers")
-        .select("id,name,city,country,stars,service,contact")
+        .select("id,name,city,country,stars,profile,service,contact")
         .eq("status", STATUS_APPROVED)
         .limit(5000)
         .execute()
     )
     return response.data or []
-
-
-def create_approved_supplier(
-    client: Client,
-    supplier: dict,
-    reviewer_id: str,
-) -> None:
-    """Fornecedor incluído direto pelo TI (já aprovado)."""
-    record = _record(supplier)
-    record.update(
-        {
-            "status": STATUS_APPROVED,
-            "reviewed_by": str(reviewer_id),
-            "reviewed_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    client.table("suppliers").insert(record).execute()
 
 
 def review_supplier(
@@ -146,7 +166,8 @@ def review_supplier(
     reviewer_id: str,
     note: str | None = None,
 ) -> None:
-    """Aprova (com as edições do TI), rejeita ou retira um fornecedor."""
+    """Salva a edição (status aprovado) ou retira um fornecedor da base
+    (status rejeitado, com a anotação; o histórico fica)."""
     record = _record(supplier) if status == STATUS_APPROVED else {}
     record.update(
         {

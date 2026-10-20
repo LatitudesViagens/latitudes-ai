@@ -35,7 +35,6 @@ from admin.painel import (
     show_admin_sidebar_button,
 )
 from admin.base_conhecimento import show_suggestion_button
-from ui.sugerir_fornecedores import asked_to_suggest, show_supplier_suggestion_button
 from admin.senhas import needs_password_change, show_password_change_screen
 from ui.busca import show_conversation_search
 from ui.lista_conversas import pop_pending_action, show_conversation_list
@@ -3146,34 +3145,17 @@ def show_authenticated_area() -> None:
                     else None
                 )
 
-                # Pedido para sugerir fornecedor: só o botão da ficha do
-                # fornecedor, não o de sugerir a resposta (seriam dois
-                # botões parecidos).
-                supplier_request = question_message is not None and asked_to_suggest(
-                    question=str(question_message.get("content", "")),
-                    answer=content,
-                )
-
+                # Fornecedores não são sugeridos pela conversa: o cadastro é
+                # feito só no Painel, pelos coordenadores de Operações.
                 if (
                     question_message is not None
                     and not is_itinerary
                     and not is_from_knowledge_base
-                    and not supplier_request
                 ):
                     show_suggestion_button(
                         client=client,
                         message=message,
                         question=str(question_message.get("content", "")),
-                    )
-
-                # Planilha/documento na pergunta ou pedido para sugerir um
-                # fornecedor: abre a ficha (o TI aprova antes de entrar).
-                if question_message is not None:
-                    show_supplier_suggestion_button(
-                        client=client,
-                        question_message=question_message,
-                        conversation_id=selected_id,
-                        answer=content,
                     )
 
     pending_offer = _get_shared_offer(

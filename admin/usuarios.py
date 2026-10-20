@@ -18,7 +18,13 @@ from admin.senhas import (
     generate_temporary_password,
     show_temporary_password,
 )
+from database.operations_team import (
+    list_operations_team,
+    remove_from_operations,
+    set_operations_level,
+)
 from database.password_resets import require_password_change
+from database.roles import LEVEL_COORDINATOR, LEVEL_OPERATOR
 from database.user_deletions import (
     list_user_deletions,
     log_user_deletion,
@@ -181,6 +187,8 @@ def show_users_tab(client: Client) -> None:
 
     _show_ti_section(client)
     st.divider()
+    _show_operations_section(client)
+    st.divider()
     _show_delete_section(client)
 
     st.subheader("Histórico de cadastros")
@@ -315,6 +323,114 @@ def _show_ti_section(client: Client) -> None:
         f"**{emails[target_user_id]}** "
         + ("incluído(a) no TI." if grant else "retirado(a) do TI.")
     )
+    st.rerun()
+
+
+OPERATIONS_STATE_KEY = "admin_operations_team_changed"
+OPERATIONS_LEVEL_LABELS = {
+    LEVEL_COORDINATOR: "Coordenador(a)",
+    LEVEL_OPERATOR: "Operadora",
+}
+
+
+def _show_operations_section(client: Client) -> None:
+    """Equipe de Operações (migração 015): coordenadores cadastram
+    fornecedores no Painel; operadoras recebem os fornecedores pela
+    conversa com a ÁGORA."""
+    changed = st.session_state.pop(OPERATIONS_STATE_KEY, None)
+
+    if changed:
+        st.success(changed)
+
+    st.subheader("Equipe de Operações")
+    st.caption(
+        "Coordenadores cadastram, editam e retiram fornecedores (veem só a "
+        "aba Fornecedores do Painel). Operadoras recebem os fornecedores "
+        "cadastrados pela conversa com a ÁGORA. Quem não está aqui não vê os "
+        "fornecedores. A mudança vale em até 5 minutos (no Painel, no "
+        "próximo login)."
+    )
+
+    try:
+        emails = user_emails(client)
+        team = list_operations_team(client)
+    except Exception as error:
+        print(f"[TI] Falha ao listar a equipe de Operações: {type(error).__name__}", flush=True)
+        st.error("Não foi possível carregar a equipe de Operações. Confira se a migração 015 foi aplicada.")
+        return
+
+    for level, label in OPERATIONS_LEVEL_LABELS.items():
+        members = sorted(
+            (emails.get(user_id, user_id) for user_id, member_level in team.items() if member_level == level),
+            key=str.lower,
+        )
+        st.markdown(f"**{label}s:** " + (", ".join(members) if members else "ninguém"))
+
+    user_ids = sorted(emails, key=lambda user_id: emails[user_id].lower())
+
+    if not user_ids:
+        return
+
+    with st.form("admin_operations_team_form", border=True):
+        target_user_id = st.selectbox(
+            "Usuário",
+            options=user_ids,
+            format_func=lambda user_id: emails[user_id] + (
+                f" ({OPERATIONS_LEVEL_LABELS[team[user_id]]})" if user_id in team else ""
+            ),
+            index=None,
+            placeholder="Escolha o usuário",
+        )
+        level = st.radio(
+            "Nível",
+            options=list(OPERATIONS_LEVEL_LABELS),
+            format_func=OPERATIONS_LEVEL_LABELS.get,
+            horizontal=True,
+        )
+        save_column, remove_column = st.columns(2)
+
+        with save_column:
+            save = st.form_submit_button(
+                "Incluir ou mudar o nível",
+                icon=":material/group_add:",
+                use_container_width=True,
+            )
+
+        with remove_column:
+            remove = st.form_submit_button(
+                "Retirar de Operações",
+                icon=":material/group_remove:",
+                use_container_width=True,
+            )
+
+    if not (save or remove):
+        return
+
+    if target_user_id is None:
+        st.warning("Escolha o usuário.")
+        return
+
+    try:
+        if save:
+            set_operations_level(
+                client=client,
+                user_id=target_user_id,
+                level=level,
+                changed_by=str(st.session_state.get("user_id") or ""),
+            )
+            message = f"**{emails[target_user_id]}** agora é {OPERATIONS_LEVEL_LABELS[level].lower()} em Operações."
+        else:
+            remove_from_operations(
+                client=client,
+                user_id=target_user_id,
+            )
+            message = f"**{emails[target_user_id]}** retirado(a) de Operações."
+    except Exception as error:
+        print(f"[TI] Falha ao mudar a equipe de Operações: {type(error).__name__}", flush=True)
+        st.error("Não foi possível salvar. Tente novamente.")
+        return
+
+    st.session_state[OPERATIONS_STATE_KEY] = message
     st.rerun()
 
 
