@@ -22,7 +22,7 @@ import streamlit as st
 from supabase import Client
 
 from database.ai_usage import log_ai_usage
-from database.attachments import extract_file_text, validate_text_file
+from database.attachments import DOCX_MIME_TYPE, MAX_FILE_SIZE, extract_file_text
 from database.suppliers import (
     FIELDS,
     PROFILES,
@@ -50,7 +50,7 @@ COLUMNS = {
     "country": "País",
     "profile": "Perfil",
     "service": "Serviço",
-    "contact": "Contato geral",
+    "contact": "Contato",
 }
 TEXT_COLUMNS = ("name", "city", "country", "profile", "service", "contact")
 
@@ -61,10 +61,14 @@ PROFILE_HELP = (
     "enxuto. SERVIÇOS SEPARADOS: serviços vendidos avulsos, fora de pacote."
 )
 CARD_NOTE = (
-    "A ficha leva só nome, cidade, país, perfil, serviço e contato "
-    "geral da empresa (sem preços, propostas ou contatos pessoais)."
+    "A ficha leva só nome, cidade, país, perfil, serviço e contato da "
+    "empresa (sem preços, propostas ou contatos pessoais)."
 )
-UPLOAD_TYPES = ["xlsx", "csv", "docx", "pdf", "txt"]
+# Qualquer planilha (Excel novo e antigo, LibreOffice, CSV/TSV), além de
+# Word, PDF e texto.
+SPREADSHEET_TYPES = ("xlsx", "xlsm", "xlsb", "xls", "ods")
+UPLOAD_TYPES = [*SPREADSHEET_TYPES, "csv", "tsv", "txt", "docx", "pdf"]
+MAX_IMPORT_TEXT = 2 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -351,14 +355,15 @@ def _show_manual_form(
             city_column, country_column = st.columns(2)
             city = city_column.text_input("Cidade", max_chars=120, key=f"{prefix}_city")
             country = country_column.text_input("País *", max_chars=80, key=f"{prefix}_country")
-            profile = st.selectbox(
+            profile_column, contact_column = st.columns(2)
+            profile = profile_column.selectbox(
                 "Perfil",
                 options=PROFILE_OPTIONS,
                 help=PROFILE_HELP,
                 key=f"{prefix}_profile",
             )
-            contact = st.text_input(
-                "Contato geral",
+            contact = contact_column.text_input(
+                "Contato",
                 max_chars=300,
                 placeholder="Site, e-mail ou telefone da empresa",
                 key=f"{prefix}_contact",
@@ -405,23 +410,88 @@ IMPORT_KEY = "suppliers_new_import"
 UPLOAD_VERSION_KEY = "suppliers_upload_version"
 
 
+def _spreadsheet_text(data: bytes) -> str:
+    """Todas as abas de uma planilha (xlsx, xlsm, xlsb, xls, ods), uma linha
+    por linha da planilha, células separadas por " | "."""
+    from io import BytesIO
+
+    from python_calamine import CalamineWorkbook
+
+    workbook = CalamineWorkbook.from_filelike(BytesIO(data))
+    parts = []
+
+    for sheet_name in workbook.sheet_names:
+        rows = workbook.get_sheet_by_name(sheet_name).to_python(skip_empty_area=True)
+        lines = [
+            " | ".join("" if value is None else str(value).strip() for value in row)
+            for row in rows
+            if any(str(value).strip() for value in row if value is not None)
+        ]
+
+        if lines:
+            parts.append(f"Aba: {sheet_name}\n" + "\n".join(lines))
+
+    return "\n\n".join(parts)
+
+
+def _plain_text(data: bytes) -> str:
+    """CSV, TSV e texto em UTF-8 ou no padrão do Excel no Windows."""
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    return data.decode("latin-1")
+
+
+def file_text(
+    data: bytes,
+    filename: str,
+) -> str:
+    """Texto do arquivo enviado na aba, pelo tipo (extensão). Erro de
+    formato vira ValueError com mensagem para a pessoa."""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if not data:
+        raise ValueError(f"O arquivo {filename} está vazio.")
+
+    if len(data) > MAX_FILE_SIZE:
+        raise ValueError(f"O arquivo {filename} passa de 10 MB.")
+
+    if extension in SPREADSHEET_TYPES:
+        try:
+            text = _spreadsheet_text(data)
+        except Exception as error:
+            print(f"[FORNECEDORES] Planilha ilegível: {type(error).__name__}", flush=True)
+            raise ValueError(
+                f"Não foi possível ler a planilha {filename}. Confira se o "
+                "arquivo abre no Excel e não tem senha."
+            ) from error
+    elif extension in {"csv", "tsv", "txt"}:
+        text = _plain_text(data)
+    elif extension == "docx":
+        text = extract_file_text(data=data, mime_type=DOCX_MIME_TYPE, filename=filename)
+    elif extension == "pdf":
+        if not data.startswith(b"%PDF-"):
+            raise ValueError(f"O PDF {filename} é inválido.")
+
+        text = extract_file_text(data=data, mime_type="application/pdf", filename=filename)
+    else:
+        raise ValueError(f"O formato de {filename} não é aceito.")
+
+    return text[:MAX_IMPORT_TEXT]
+
+
 def _read_upload(
     client: Client,
     upload,
 ) -> dict | None:
     from services.fornecedores import extract_suppliers
 
-    data = upload.getvalue()
-
     try:
-        mime_type = validate_text_file(
-            filename=upload.name,
-            declared_mime_type=upload.type or "",
-            data=data,
-        )
-        text = extract_file_text(
-            data=data,
-            mime_type=mime_type,
+        text = file_text(
+            data=upload.getvalue(),
             filename=upload.name,
         )
     except ValueError as error:
@@ -470,7 +540,10 @@ def _show_import(
             "Planilha ou documento com os fornecedores",
             type=UPLOAD_TYPES,
             key=f"suppliers_upload_{st.session_state.get(UPLOAD_VERSION_KEY, 0)}",
-            help="Excel, CSV, Word, PDF ou texto, até 10 MB.",
+            help=(
+                "Qualquer planilha (Excel .xlsx/.xls, LibreOffice .ods, CSV), "
+                "Word, PDF ou texto, até 10 MB."
+            ),
         )
 
         if upload is not None and st.button(
@@ -574,6 +647,7 @@ FILTER_KEYS = {
     "suppliers_filter_profile": [],
     "suppliers_filter_service": "",
     "suppliers_filter_name": "",
+    "suppliers_filter_contact": "",
 }
 
 
@@ -622,12 +696,13 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
             placeholder="Todos",
             key="suppliers_filter_profile",
         )
-        service_column, name_column, search_column, clear_column = st.columns(
-            [3, 3, 1, 1],
+        service_column, name_column, contact_column, search_column, clear_column = st.columns(
+            [3, 3, 3, 1.3, 1.3],
             vertical_alignment="bottom",
         )
         service_column.text_input("Serviço", placeholder="Ex.: hotel, guia", key="suppliers_filter_service")
         name_column.text_input("Nome", key="suppliers_filter_name")
+        contact_column.text_input("Contato", placeholder="Site, e-mail ou telefone", key="suppliers_filter_contact")
         search_column.form_submit_button(
             "Buscar",
             icon=":material/search:",
@@ -646,6 +721,7 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
     chosen_profiles = st.session_state.get("suppliers_filter_profile") or []
     service = normalize(st.session_state.get("suppliers_filter_service"))
     name = normalize(st.session_state.get("suppliers_filter_name"))
+    contact = normalize(st.session_state.get("suppliers_filter_contact"))
 
     return [
         item
@@ -655,6 +731,7 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
         and (not chosen_profiles or item.get("profile") in chosen_profiles)
         and (not service or _matches_service(service, item))
         and (not name or name in normalize(item.get("name")))
+        and (not contact or contact in normalize(item.get("contact")))
     ]
 
 
@@ -742,6 +819,7 @@ def _show_registered(
             "suppliers_filter_profile",
             "suppliers_filter_service",
             "suppliers_filter_name",
+            "suppliers_filter_contact",
         )
     )
     edited = st.data_editor(

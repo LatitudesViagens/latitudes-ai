@@ -131,3 +131,35 @@ Parar a ÁGORA, repor as **3 variáveis antigas** no Azure e no `.env`, e inicia
 2. Manter o projeto de São Paulo por **7 dias** sem usar. Antes de apagar, baixar o último backup (*Database → Backups*).
 3. Apagar os arquivos da cópia (`roles.sql`, `schema.sql`, `data.sql`, `antigo.csv`, `novo.csv`) da pasta `C:\migracao-agora`.
 4. Atualizar o CLAUDE.md e o `docs/arquitetura.md` com a nova região.
+
+## E. Limpeza final (a partir de 21/10/2026)
+
+Situação em 20/10/2026: a ÁGORA grava só no projeto novo (EUA). A última
+mensagem no projeto de São Paulo é de 13/10, às 14h49, antes da troca. Os
+fornecedores e a equipe de Operações só existem no novo.
+
+Ordem (cada passo só depois do anterior):
+
+1. **Conferência final (Claude, só leitura):** o projeto antigo continua sem
+   gravações novas e o novo continua recebendo. Se o antigo tiver algo novo,
+   PARAR: alguma coisa ainda aponta para ele.
+2. **Backup do projeto antigo (decisão da Isabelle):** o banco antigo é
+   igual à cópia de 14/10 (`data.sql` e `schema.sql`), e os arquivos do
+   Storage foram copiados para o novo. O projeto novo tem backup diário
+   (plano Pro). Guardar um backup local do antigo significa manter dados de
+   clientes num computador: se for guardar, que seja em local protegido e
+   com prazo para apagar.
+3. **Apagar o projeto de São Paulo (Isabelle, no painel do Supabase):**
+   projeto antigo → *Project Settings → General → Delete project*. Não tem
+   volta: apaga banco, arquivos e backups dele.
+4. **Revogar o token de acesso (PAT) usado na migração (Isabelle):**
+   *Account → Access Tokens* → revogar o token criado para a migração.
+5. **Apagar os arquivos locais (Claude):** a pasta
+   `%LOCALAPPDATA%\agora-migracao` inteira: o cofre de credenciais
+   (`credenciais.json`) e a cópia do banco em `troca\` (`data.sql`,
+   `schema.sql`, `roles.sql`, inventários, permissões). Têm dados reais.
+6. **Atualizar a documentação:** região nova no `docs/arquitetura.md` e nas
+   anotações do projeto.
+
+Depois disso, o kit de `scripts/migracao_regiao/` continua no repositório
+(sem nenhum segredo) para uma eventual migração futura.

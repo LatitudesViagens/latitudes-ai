@@ -1408,6 +1408,8 @@ pytest-xdist==3.8.0
     # via
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)
+python-calamine==0.9.0
+    # via -r requirements.txt
 python-dateutil==2.9.0.post0
     # via
     #   -c constraints-3.13.txt.stable.tmp

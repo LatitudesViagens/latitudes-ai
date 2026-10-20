@@ -558,25 +558,6 @@ def extract_attachment_text(
     )
 
 
-def validate_text_file(
-    filename: str,
-    declared_mime_type: str,
-    data: bytes,
-) -> str:
-    """Confere um arquivo enviado na tela (mesmas regras dos anexos: formato,
-    10 MB, conteúdo) e devolve o tipo. Imagem não serve: não tem texto."""
-    _safe_name, mime_type = _validate_file(
-        filename=filename,
-        declared_mime_type=declared_mime_type,
-        data=data,
-    )
-
-    if mime_type not in TEXT_ATTACHMENT_MIME_TYPES:
-        raise ValueError(f"{filename} não é planilha, documento ou texto.")
-
-    return mime_type
-
-
 def extract_file_text(
     data: bytes,
     mime_type: str,
