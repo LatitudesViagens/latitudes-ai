@@ -24,14 +24,64 @@ from database.suppliers import (
     review_supplier,
 )
 from services.fornecedores import forget_suppliers_cache, split_duplicates, supplier_key
-from ui.sugerir_fornecedores import COLUMNS, incomplete_rows, supplier_columns_config
+from ui.sugerir_fornecedores import COLUMNS, incomplete_rows, supplier_columns_config, supplier_frame
 
 FLASH_KEY = "admin_suppliers_flash"
 
 
 def _flash(message: str) -> None:
     st.session_state[FLASH_KEY] = message
+
+    # Depois de aprovar/rejeitar/retirar, a próxima lista começa sem seleção.
+    for table_name in ("pending", "approved"):
+        _set_selection(table_name, selected=False)
+
     st.rerun()
+
+
+def _selection_state(table_name: str) -> dict:
+    return st.session_state.setdefault(
+        f"suppliers_selection_{table_name}",
+        {"all": False, "version": 0},
+    )
+
+
+def _set_selection(
+    table_name: str,
+    selected: bool,
+) -> None:
+    state = _selection_state(table_name)
+    state["all"] = selected
+    # Tabela nova (outra chave): a tabela de edição guarda as marcações
+    # antigas e não aceitaria a troca de todas de uma vez.
+    state["version"] += 1
+
+
+def _selection_bar(table_name: str) -> tuple[bool, int]:
+    """"Selecionar todos" e "Limpar seleção" acima da tabela; marcar um por
+    um continua na própria tabela. Devolve (todos marcados?, versão)."""
+    all_column, clear_column, _space = st.columns(
+        [1, 1, 3],
+        vertical_alignment="center",
+    )
+    all_column.button(
+        "Selecionar todos",
+        icon=":material/select_all:",
+        type="tertiary",
+        key=f"suppliers_select_all_{table_name}",
+        on_click=_set_selection,
+        args=(table_name, True),
+    )
+    clear_column.button(
+        "Limpar seleção",
+        icon=":material/deselect:",
+        type="tertiary",
+        key=f"suppliers_clear_{table_name}",
+        on_click=_set_selection,
+        args=(table_name, False),
+    )
+    state = _selection_state(table_name)
+    return state["all"], state["version"]
 
 
 def _emails(client: Client) -> dict[str, str]:
@@ -91,17 +141,21 @@ def _clean_row(row: dict) -> tuple:
 def _table(
     suppliers: list[dict],
     extra: dict[str, list],
+    selected: bool = False,
 ) -> pandas.DataFrame:
-    table = pandas.DataFrame(
-        [{"include": False, **{name: item.get(name) for name in FIELDS}} for item in suppliers],
-        columns=list(COLUMNS),
+    records = []
+
+    for index, item in enumerate(suppliers):
+        record = {"include": selected, **{name: item.get(name) for name in FIELDS}}
+        record.update({name: values[index] for name, values in extra.items()})
+        record["id"] = str(item["id"])
+        records.append(record)
+
+    # Tipos certos por coluna (coluna toda vazia não vira número).
+    return supplier_frame(
+        records=records,
+        columns=[*COLUMNS, *extra, "id"],
     )
-
-    for name, values in extra.items():
-        table[name] = values
-
-    table["id"] = [str(item["id"]) for item in suppliers]
-    return table
 
 
 def _show_pending(
@@ -120,6 +174,7 @@ def _show_pending(
         "for aprovado fica visível para todos que usam a ÁGORA."
     )
     emails = _emails(client)
+    select_all, version = _selection_bar("pending")
     table = _table(
         suppliers=pending,
         extra={
@@ -130,6 +185,7 @@ def _show_pending(
             "author": [emails.get(str(item.get("suggested_by")), "") for item in pending],
             "source": [item.get("source_file") or "" for item in pending],
         },
+        selected=select_all,
     )
     config = supplier_columns_config()
     config["include"] = st.column_config.CheckboxColumn("Selecionar", width="small")
@@ -143,7 +199,7 @@ def _show_pending(
         column_order=[*COLUMNS, "already", "author", "source"],
         hide_index=True,
         width="stretch",
-        key="suppliers_pending_editor",
+        key=f"suppliers_pending_editor_{version}",
     )
     selected = [row for row in edited.to_dict(orient="records") if row.get("include")]
     approve_column, reject_column = st.columns(2)
@@ -218,7 +274,13 @@ def _show_approved(
             if wanted in normalize(" ".join(str(item.get(name) or "") for name in FIELDS))
         ]
 
-    table = _table(suppliers=approved, extra={})
+    # "Selecionar todos" vale para o que o filtro está mostrando.
+    select_all, version = _selection_bar("approved")
+    table = _table(
+        suppliers=approved,
+        extra={},
+        selected=select_all,
+    )
     config = supplier_columns_config()
     config["include"] = st.column_config.CheckboxColumn("Selecionar", width="small")
     edited = st.data_editor(
@@ -227,7 +289,7 @@ def _show_approved(
         column_order=list(COLUMNS),
         hide_index=True,
         width="stretch",
-        key=f"suppliers_approved_editor_{search.strip()}",
+        key=f"suppliers_approved_editor_{search.strip()}_{version}",
     )
     original = {row["id"]: _clean_row(row) for row in table.to_dict(orient="records")}
     rows = edited.to_dict(orient="records")

@@ -78,6 +78,33 @@ def asked_to_suggest(question: str, answer: str = "") -> bool:
     )
 
 
+TEXT_COLUMNS = ("name", "city", "country", "service", "contact")
+
+
+def supplier_frame(
+    records: list[dict],
+    columns: list[str],
+) -> pandas.DataFrame:
+    """Tabela com o tipo certo em cada coluna. Coluna toda vazia (ficha em
+    branco, ninguém com contato) vira número (NaN) no pandas, e a tabela de
+    edição não deixa digitar texto nela (StreamlitAPIException)."""
+    table = pandas.DataFrame(records, columns=columns)
+
+    for name in columns:
+        if name in TEXT_COLUMNS or name in {"already", "author", "source", "id"}:
+            table[name] = [
+                "" if value is None or (isinstance(value, float) and value != value) else str(value)
+                for value in table[name]
+            ]
+            table[name] = table[name].astype("object")
+        elif name == "stars":
+            table[name] = pandas.to_numeric(table[name], errors="coerce").astype("float64")
+        elif name == "include":
+            table[name] = table[name].fillna(False).astype(bool)
+
+    return table
+
+
 def file_attachments(message: dict | None) -> list[dict]:
     """Anexos com texto (planilha, Word, CSV, texto, PDF) de uma mensagem."""
     return [
@@ -263,8 +290,8 @@ def _suggestion_dialog(
 
     # Quem já está na base vem desmarcado e não é enviado de novo.
     approved_keys = _approved_keys(client)
-    table = pandas.DataFrame(
-        [
+    table = supplier_frame(
+        records=[
             {
                 "include": supplier_key(supplier) not in approved_keys,
                 **supplier,

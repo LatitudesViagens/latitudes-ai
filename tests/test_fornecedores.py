@@ -19,6 +19,7 @@ from ui.sugerir_fornecedores import (
     asked_to_suggest,
     incomplete_rows,
     is_included,
+    supplier_frame,
     text_for_privacy_check,
 )
 
@@ -197,6 +198,21 @@ class PedidoSemArquivoTest(unittest.TestCase):
                 answer="Use o botão 'Sugerir fornecedor para a base' abaixo.",
             )
         )
+
+    def test_ficha_em_branco_tem_colunas_de_texto(self):
+        # Coluna toda vazia virava número (NaN) e a tabela de edição dava
+        # StreamlitAPIException ao abrir a ficha em branco (20/10/2026).
+        tabela = supplier_frame(
+            records=[{"include": True}],
+            columns=["include", "name", "city", "country", "stars", "service", "contact", "already"],
+        )
+
+        for coluna in ("name", "city", "country", "service", "contact", "already"):
+            self.assertEqual(tabela[coluna].dtype, object, coluna)
+            self.assertEqual(tabela[coluna].iloc[0], "")
+
+        self.assertEqual(str(tabela["stars"].dtype), "float64")
+        self.assertTrue(bool(tabela["include"].iloc[0]))
 
     def test_linhas_incluidas(self):
         self.assertTrue(is_included({"include": True, "name": ""}))
