@@ -331,6 +331,10 @@ OPERATIONS_LEVEL_LABELS = {
     LEVEL_COORDINATOR: "Coordenador(a)",
     LEVEL_OPERATOR: "Operadora",
 }
+OPERATIONS_GROUP_TITLES = {
+    LEVEL_COORDINATOR: "Coordenadores",
+    LEVEL_OPERATOR: "Operadoras",
+}
 
 
 def _show_operations_section(client: Client) -> None:
@@ -359,12 +363,16 @@ def _show_operations_section(client: Client) -> None:
         st.error("Não foi possível carregar a equipe de Operações. Confira se a migração 015 foi aplicada.")
         return
 
-    for level, label in OPERATIONS_LEVEL_LABELS.items():
+    # Um e-mail por linha, como na Equipe de TI.
+    for level, title in OPERATIONS_GROUP_TITLES.items():
         members = sorted(
             (emails.get(user_id, user_id) for user_id, member_level in team.items() if member_level == level),
             key=str.lower,
         )
-        st.markdown(f"**{label}s:** " + (", ".join(members) if members else "ninguém"))
+        st.markdown(
+            f"**{title}**\n\n"
+            + ("\n".join(f"- {member}" for member in members) if members else "Ninguém.")
+        )
 
     user_ids = sorted(emails, key=lambda user_id: emails[user_id].lower())
 
