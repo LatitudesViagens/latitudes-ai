@@ -15,7 +15,12 @@ from supabase import Client
 
 from database.ai_usage import log_ai_usage
 from database.attachments import TEXT_ATTACHMENT_MIME_TYPES, extract_attachment_text
-from database.suppliers import has_suggestions_for_message, suggest_suppliers
+from database.suppliers import (
+    STATUS_PENDING,
+    has_suggestions_for_message,
+    list_suppliers,
+    suggest_suppliers,
+)
 from services.custos import collect_usage
 
 COLUMNS = {
@@ -158,14 +163,6 @@ def text_for_privacy_check(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _approved_keys(client: Client) -> set[tuple[str, str, str]]:
-    """Fornecedores já aprovados (a mesma lista que a ÁGORA consulta)."""
-    from services.fornecedores import ensure_suppliers_loaded, loaded_suppliers, supplier_key
-
-    ensure_suppliers_loaded(client)
-    return {supplier_key(item) for item in loaded_suppliers() or []}
-
-
 def _state_key(message_id: str) -> str:
     return f"suppliers_suggested_{message_id}"
 
@@ -236,111 +233,73 @@ def _extract(
     }
 
 
-@st.dialog("Sugerir fornecedores para a base", width="large")
-def _suggestion_dialog(
+STAR_OPTIONS = ["Sem classificação", "1", "2", "3", "4", "5"]
+
+
+def _existing_keys(client: Client) -> dict[tuple[str, str, str], str]:
+    """Fornecedores que não podem ser sugeridos de novo, com o motivo: os já
+    aprovados e as sugestões que aguardam análise (as da própria pessoa; o
+    RLS não mostra as dos outros)."""
+    from services.fornecedores import ensure_suppliers_loaded, loaded_suppliers, supplier_key
+
+    existing: dict[tuple[str, str, str], str] = {}
+
+    try:
+        for item in list_suppliers(client=client, status=STATUS_PENDING, limit=2000):
+            existing[supplier_key(item)] = "já foi sugerido e aguarda análise"
+    except Exception as error:
+        print(f"[FORNECEDORES] Falha ao ler sugestões pendentes: {type(error).__name__}", flush=True)
+
+    ensure_suppliers_loaded(client)
+
+    for item in loaded_suppliers() or []:
+        existing[supplier_key(item)] = "já está na base"
+
+    return existing
+
+
+def _describe(row: dict) -> str:
+    place = ", ".join(
+        str(row.get(name)).strip()
+        for name in ("city", "country")
+        if isinstance(row.get(name), str) and row.get(name).strip()
+    )
+    return f"{str(row.get('name') or '').strip()} ({place})" if place else str(row.get("name") or "").strip()
+
+
+def _duplicate_messages(
+    rows: list[dict],
+    existing: dict[tuple[str, str, str], str],
+) -> list[str]:
+    """Um aviso por fornecedor repetido (na base, aguardando análise ou
+    duas vezes no próprio envio). Mesmo critério de sempre: nome, cidade e
+    país, sem acentos e sem maiúsculas."""
+    from services.fornecedores import supplier_key
+
+    messages = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for row in rows:
+        key = supplier_key(row)
+
+        if key in existing:
+            messages.append(f"{_describe(row)} {existing[key]}.")
+        elif key in seen:
+            messages.append(f"{_describe(row)} aparece mais de uma vez.")
+
+        seen.add(key)
+
+    return messages
+
+
+def _send(
     client: Client,
-    message: dict,
+    rows: list[dict],
+    message_id: str,
+    source_file: str | None,
     conversation_id: str | None,
 ) -> None:
-    message_id = str(message["id"])
-    extraction_key = _extraction_key(message_id)
-
-    if extraction_key not in st.session_state:
-        with st.spinner("Lendo o arquivo e organizando os fornecedores..."):
-            st.session_state[extraction_key] = _extract(
-                client=client,
-                message=message,
-                conversation_id=conversation_id,
-            )
-
-    extraction = st.session_state[extraction_key]
-
-    for name in extraction["unreadable"]:
-        st.warning(f"Não foi possível ler {name}.")
-
-    if extraction["failed_parts"]:
-        st.warning(
-            "Parte do arquivo não pôde ser organizada. Confira se falta "
-            "algum fornecedor."
-        )
-
-    if extraction["truncated"]:
-        st.warning("O arquivo é grande: só a primeira parte foi lida.")
-
-    suppliers = extraction["suppliers"]
-
-    if suppliers:
-        st.caption(
-            "Revise antes de enviar: corrija o que precisar e desmarque o que "
-            "não deve entrar."
-        )
-    else:
-        # Nada para aproveitar (ou só "quero sugerir um fornecedor"): uma
-        # ficha em branco para preencher; "+" na tabela acrescenta outras.
-        st.caption("Preencha a ficha do fornecedor. Use o + da tabela para acrescentar outros.")
-        suppliers = [{}]
-
-    st.caption(
-        "A ficha leva só nome, cidade, país, estrelas, serviço e contato "
-        "geral da empresa (sem preços, propostas ou contatos pessoais). "
-        + SUGGESTION_REVIEW_NOTE
-    )
-
-    from services.fornecedores import split_duplicates, supplier_key
-
-    # Quem já está na base vem desmarcado e não é enviado de novo.
-    approved_keys = _approved_keys(client)
-    table = supplier_frame(
-        records=[
-            {
-                "include": supplier_key(supplier) not in approved_keys,
-                **supplier,
-                "already": "Sim" if supplier_key(supplier) in approved_keys else "",
-            }
-            for supplier in suppliers
-        ],
-        columns=[*COLUMNS, "already"],
-    )
-    config = supplier_columns_config()
-    config["already"] = st.column_config.TextColumn("Já na base", disabled=True, width="small")
-    edited = st.data_editor(
-        table,
-        column_config=config,
-        hide_index=True,
-        num_rows="dynamic",
-        width="stretch",
-        key=f"suppliers_editor_{message_id}",
-    )
-    rows, duplicates = split_duplicates(
-        rows=[
-            row
-            for row in edited.to_dict(orient="records")
-            if is_included(row)
-        ],
-        existing_keys=approved_keys,
-    )
-
-    if duplicates:
-        st.info(
-            f"{len(duplicates)} fornecedor(es) já está(ão) na base ou "
-            "repetido(s) na tabela e não será(ão) enviado(s) de novo."
-        )
-
-    if not st.button(
-        f"Enviar {len(rows)} para aprovação",
-        icon=":material/send:",
-        type="primary",
-        disabled=not rows,
-        key=f"suppliers_send_{message_id}",
-    ):
-        return
-
-    missing = incomplete_rows(rows)
-
-    if missing:
-        st.error(f"Preencha nome, país e serviço em {missing} linha(s) antes de enviar.")
-        return
-
+    """Trava da LGPD e envio (comum ao formulário e à tabela)."""
     from services.personal_data_check import find_client_data
 
     with (
@@ -365,7 +324,7 @@ def _suggestion_dialog(
 
     if check.found:
         st.warning(
-            "A lista tem dados de clientes e não pode ir para a base (LGPD): "
+            "A sugestão tem dados de clientes e não pode ir para a base (LGPD): "
             + "; ".join(check.items[:5])
         )
         return
@@ -375,7 +334,7 @@ def _suggestion_dialog(
             client=client,
             suppliers=rows,
             source_message_id=message_id,
-            source_file=extraction["files"],
+            source_file=source_file,
         )
     except Exception:
         traceback.print_exc()
@@ -383,9 +342,308 @@ def _suggestion_dialog(
         return
 
     st.session_state[_state_key(message_id)] = True
-    st.session_state.pop(extraction_key, None)
+
+    for key in [key for key in st.session_state if str(key).startswith(f"suppliers_form_{message_id}")]:
+        st.session_state.pop(key, None)
+
+    st.session_state.pop(_extraction_key(message_id), None)
     st.toast(f"{sent} fornecedor(es) enviado(s). {SUGGESTION_REVIEW_NOTE}")
     st.rerun()
+
+
+def _form_cards_key(message_id: str) -> str:
+    return f"suppliers_form_{message_id}_cards"
+
+
+def _add_card(message_id: str) -> None:
+    from uuid import uuid4
+
+    st.session_state[_form_cards_key(message_id)].append({"uid": uuid4().hex[:8]})
+
+
+def _remove_card(
+    message_id: str,
+    uid: str,
+) -> None:
+    cards = st.session_state[_form_cards_key(message_id)]
+    st.session_state[_form_cards_key(message_id)] = [card for card in cards if card["uid"] != uid]
+
+
+def _show_form(
+    client: Client,
+    message_id: str,
+    suggested: list[dict],
+    conversation_id: str | None,
+) -> None:
+    """Sugestão digitada: campos de formulário (um bloco por fornecedor), já
+    preenchidos com o que a pessoa escreveu na mensagem."""
+    from uuid import uuid4
+
+    cards_key = _form_cards_key(message_id)
+
+    if cards_key not in st.session_state:
+        st.session_state[cards_key] = [
+            {"uid": uuid4().hex[:8], **supplier}
+            for supplier in (suggested or [{}])
+        ]
+
+    cards = st.session_state[cards_key]
+    rows = []
+
+    for number, card in enumerate(cards, start=1):
+        uid = card["uid"]
+        prefix = f"suppliers_form_{message_id}_{uid}"
+
+        with st.container(border=True):
+            title_column, remove_column = st.columns(
+                [6, 1],
+                vertical_alignment="center",
+            )
+            title_column.markdown(f"**Fornecedor {number}**" if len(cards) > 1 else "**Fornecedor**")
+
+            if len(cards) > 1:
+                remove_column.button(
+                    "",
+                    icon=":material/delete:",
+                    type="tertiary",
+                    key=f"{prefix}_remove",
+                    help="Tirar este fornecedor",
+                    on_click=_remove_card,
+                    args=(message_id, uid),
+                )
+
+            name_column, service_column = st.columns(2)
+            name = name_column.text_input(
+                "Nome *",
+                value=card.get("name") or "",
+                max_chars=200,
+                key=f"{prefix}_name",
+            )
+            service = service_column.text_input(
+                "Serviço *",
+                value=card.get("service") or "",
+                max_chars=300,
+                placeholder="Ex.: Hotel, Receptivo (DMC), Guia em português",
+                key=f"{prefix}_service",
+            )
+            city_column, country_column, stars_column = st.columns([2, 2, 1])
+            city = city_column.text_input(
+                "Cidade",
+                value=card.get("city") or "",
+                max_chars=120,
+                key=f"{prefix}_city",
+            )
+            country = country_column.text_input(
+                "País *",
+                value=card.get("country") or "",
+                max_chars=80,
+                key=f"{prefix}_country",
+            )
+            stars_value = str(card.get("stars") or "")
+            stars = stars_column.selectbox(
+                "Estrelas",
+                options=STAR_OPTIONS,
+                index=STAR_OPTIONS.index(stars_value) if stars_value in STAR_OPTIONS else 0,
+                key=f"{prefix}_stars",
+            )
+            contact = st.text_input(
+                "Contato geral",
+                value=card.get("contact") or "",
+                max_chars=300,
+                placeholder="Site, e-mail ou telefone da empresa",
+                key=f"{prefix}_contact",
+            )
+
+        rows.append(
+            {
+                "name": name,
+                "service": service,
+                "city": city,
+                "country": country,
+                "stars": stars if stars.isdigit() else None,
+                "contact": contact,
+            }
+        )
+
+    st.button(
+        "Adicionar outro fornecedor",
+        icon=":material/add:",
+        type="tertiary",
+        key=f"suppliers_form_{message_id}_add",
+        on_click=_add_card,
+        args=(message_id,),
+    )
+
+    if not st.button(
+        "Sugerir para a base",
+        icon=":material/send:",
+        type="primary",
+        key=f"suppliers_form_{message_id}_send",
+    ):
+        return
+
+    missing = incomplete_rows(rows)
+
+    if missing:
+        st.error("Preencha os campos com * (nome, serviço e país) antes de enviar.")
+        return
+
+    duplicates = _duplicate_messages(
+        rows=rows,
+        existing=_existing_keys(client),
+    )
+
+    if duplicates:
+        # Duplicado não sobe: a pessoa vê o aviso e corrige ou tira o bloco.
+        st.warning(
+            "Não foi possível enviar: este fornecedor já existe. "
+            + " ".join(duplicates)
+            if len(rows) == 1
+            else "Não foi possível enviar. Fornecedores repetidos: " + " ".join(duplicates)
+        )
+        return
+
+    _send(
+        client=client,
+        rows=rows,
+        message_id=message_id,
+        source_file=None,
+        conversation_id=conversation_id,
+    )
+
+
+def _show_table(
+    client: Client,
+    message_id: str,
+    extraction: dict,
+    conversation_id: str | None,
+) -> None:
+    """Fornecedores de um arquivo: tabela (podem ser dezenas)."""
+    from services.fornecedores import supplier_key
+
+    suppliers = extraction["suppliers"]
+
+    if not suppliers:
+        st.info("Nenhum fornecedor encontrado no arquivo.")
+        return
+
+    st.caption("Revise antes de enviar: corrija o que precisar e desmarque o que não deve entrar.")
+
+    # Quem já existe (na base ou aguardando análise) vem desmarcado.
+    existing = _existing_keys(client)
+    table = supplier_frame(
+        records=[
+            {
+                "include": supplier_key(supplier) not in existing,
+                **supplier,
+                "already": existing.get(supplier_key(supplier), ""),
+            }
+            for supplier in suppliers
+        ],
+        columns=[*COLUMNS, "already"],
+    )
+    config = supplier_columns_config()
+    config["already"] = st.column_config.TextColumn("Já existe?", disabled=True)
+    edited = st.data_editor(
+        table,
+        column_config=config,
+        hide_index=True,
+        num_rows="dynamic",
+        width="stretch",
+        key=f"suppliers_editor_{message_id}",
+    )
+    rows = [row for row in edited.to_dict(orient="records") if is_included(row)]
+
+    if not st.button(
+        f"Enviar {len(rows)} para aprovação",
+        icon=":material/send:",
+        type="primary",
+        disabled=not rows,
+        key=f"suppliers_send_{message_id}",
+    ):
+        return
+
+    missing = incomplete_rows(rows)
+
+    if missing:
+        st.error(f"Preencha nome, país e serviço em {missing} linha(s) antes de enviar.")
+        return
+
+    duplicates = _duplicate_messages(
+        rows=rows,
+        existing=existing,
+    )
+
+    if duplicates:
+        # Duplicado não sobe: desmarque ou corrija as linhas avisadas.
+        st.warning(
+            "Não foi possível enviar. Desmarque ou corrija: " + " ".join(duplicates[:10])
+            + (f" (e mais {len(duplicates) - 10})" if len(duplicates) > 10 else "")
+        )
+        return
+
+    _send(
+        client=client,
+        rows=rows,
+        message_id=message_id,
+        source_file=extraction["files"],
+        conversation_id=conversation_id,
+    )
+
+
+@st.dialog("Sugerir fornecedores para a base", width="large")
+def _suggestion_dialog(
+    client: Client,
+    message: dict,
+    conversation_id: str | None,
+) -> None:
+    message_id = str(message["id"])
+    extraction_key = _extraction_key(message_id)
+    from_file = bool(file_attachments(message))
+
+    if extraction_key not in st.session_state:
+        with st.spinner(
+            "Lendo o arquivo e organizando os fornecedores..."
+            if from_file
+            else "Preparando a ficha..."
+        ):
+            st.session_state[extraction_key] = _extract(
+                client=client,
+                message=message,
+                conversation_id=conversation_id,
+            )
+
+    extraction = st.session_state[extraction_key]
+
+    for name in extraction["unreadable"]:
+        st.warning(f"Não foi possível ler {name}.")
+
+    if extraction["failed_parts"]:
+        st.warning("Parte do arquivo não pôde ser organizada. Confira se falta algum fornecedor.")
+
+    if extraction["truncated"]:
+        st.warning("O arquivo é grande: só a primeira parte foi lida.")
+
+    st.caption(
+        "A ficha leva só nome, cidade, país, estrelas, serviço e contato "
+        "geral da empresa (sem preços, propostas ou contatos pessoais). "
+        + SUGGESTION_REVIEW_NOTE
+    )
+
+    if from_file:
+        _show_table(
+            client=client,
+            message_id=message_id,
+            extraction=extraction,
+            conversation_id=conversation_id,
+        )
+    else:
+        _show_form(
+            client=client,
+            message_id=message_id,
+            suggested=extraction["suppliers"],
+            conversation_id=conversation_id,
+        )
 
 
 def show_supplier_suggestion_button(

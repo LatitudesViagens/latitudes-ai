@@ -16,6 +16,7 @@ from services.fornecedores import (
 )
 from tests.apoio import bloquear_internet
 from ui.sugerir_fornecedores import (
+    _duplicate_messages,
     asked_to_suggest,
     incomplete_rows,
     is_included,
@@ -127,6 +128,29 @@ class DuplicidadeTest(unittest.TestCase):
             [("Palácio do Deserto", "Luxor"), ("Palácio do Deserto", "Assuã")],
         )
         self.assertEqual(len(repetidos), 2)
+
+    def test_avisos_do_formulario(self):
+        existentes = {
+            supplier_key({"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito"}): "já está na base",
+            supplier_key({"name": "Faraó Receptivo", "city": "", "country": "Egito"}): "já foi sugerido e aguarda análise",
+        }
+        avisos = _duplicate_messages(
+            rows=[
+                {"name": "hotel nilo azul", "city": "CAIRO", "country": "Egito"},
+                {"name": "Farao Receptivo", "city": "", "country": "egito"},
+                {"name": "Hotel Novo", "city": "Luxor", "country": "Egito"},
+                {"name": "Hotel Novo", "city": "Luxor", "country": "Egito"},
+            ],
+            existing=existentes,
+        )
+        self.assertEqual(
+            avisos,
+            [
+                "hotel nilo azul (CAIRO, Egito) já está na base.",
+                "Farao Receptivo (egito) já foi sugerido e aguarda análise.",
+                "Hotel Novo (Luxor, Egito) aparece mais de uma vez.",
+            ],
+        )
 
     def test_celula_vazia_da_tabela(self):
         self.assertEqual(
