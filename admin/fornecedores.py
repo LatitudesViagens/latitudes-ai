@@ -29,7 +29,6 @@ from database.suppliers import (
     STATUS_APPROVED,
     STATUS_REJECTED,
     clean_profile,
-    clean_stars,
     create_suppliers,
     list_suppliers,
     review_supplier,
@@ -49,22 +48,20 @@ COLUMNS = {
     "name": "Nome",
     "city": "Cidade",
     "country": "País",
-    "stars": "Estrelas",
     "profile": "Perfil",
     "service": "Serviço",
     "contact": "Contato geral",
 }
 TEXT_COLUMNS = ("name", "city", "country", "profile", "service", "contact")
 
-STAR_OPTIONS = ["Sem classificação", "1", "2", "3", "4", "5"]
 NO_PROFILE = "Não informado"
 PROFILE_OPTIONS = [NO_PROFILE, *PROFILES]
 PROFILE_HELP = (
-    "Luxo: premium/boutique. Superior: alto padrão. Intermediário: bom "
-    "custo-benefício. Econômico: grupos mais simples, estudantes."
+    "VIP: alto padrão, luxo. BUDGET: grupos mais simples, orçamento "
+    "enxuto. SERVIÇOS SEPARADOS: serviços vendidos avulsos, fora de pacote."
 )
 CARD_NOTE = (
-    "A ficha leva só nome, cidade, país, estrelas, perfil, serviço e contato "
+    "A ficha leva só nome, cidade, país, perfil, serviço e contato "
     "geral da empresa (sem preços, propostas ou contatos pessoais)."
 )
 UPLOAD_TYPES = ["xlsx", "csv", "docx", "pdf", "txt"]
@@ -81,14 +78,6 @@ def supplier_columns_config() -> dict:
         "name": st.column_config.TextColumn(COLUMNS["name"], required=True, max_chars=200),
         "city": st.column_config.TextColumn(COLUMNS["city"], max_chars=120),
         "country": st.column_config.TextColumn(COLUMNS["country"], required=True, max_chars=80),
-        "stars": st.column_config.NumberColumn(
-            COLUMNS["stars"],
-            min_value=1,
-            max_value=5,
-            step=1,
-            format="%d ★",
-            width="small",
-        ),
         "profile": st.column_config.SelectboxColumn(
             COLUMNS["profile"],
             options=list(PROFILES),
@@ -115,8 +104,6 @@ def supplier_frame(
                 for value in table[name]
             ]
             table[name] = table[name].astype("object")
-        elif name == "stars":
-            table[name] = pandas.to_numeric(table[name], errors="coerce").astype("float64")
         elif name == "include":
             table[name] = table[name].fillna(False).astype(bool)
 
@@ -200,15 +187,13 @@ def duplicate_messages(
 
 
 def _clean_row(row: dict) -> tuple:
-    """Valores comparáveis: célula vazia (NaN) = vazio e 4.0 = 4 estrelas."""
+    """Valores comparáveis: célula vazia (NaN) = vazio; perfil pelo nome oficial."""
     values = []
 
     for name in FIELDS:
         value = row.get(name)
 
-        if name == "stars":
-            values.append(clean_stars(value))
-        elif name == "profile":
+        if name == "profile":
             values.append(clean_profile(value))
         elif value is None or (isinstance(value, float) and value != value):
             values.append("")
@@ -366,9 +351,7 @@ def _show_manual_form(
             city_column, country_column = st.columns(2)
             city = city_column.text_input("Cidade", max_chars=120, key=f"{prefix}_city")
             country = country_column.text_input("País *", max_chars=80, key=f"{prefix}_country")
-            stars_column, profile_column = st.columns(2)
-            stars = stars_column.selectbox("Estrelas", options=STAR_OPTIONS, key=f"{prefix}_stars")
-            profile = profile_column.selectbox(
+            profile = st.selectbox(
                 "Perfil",
                 options=PROFILE_OPTIONS,
                 help=PROFILE_HELP,
@@ -387,7 +370,6 @@ def _show_manual_form(
                 "service": service,
                 "city": city,
                 "country": country,
-                "stars": stars if stars.isdigit() else None,
                 "profile": clean_profile(profile),
                 "contact": contact,
             }

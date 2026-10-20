@@ -4,7 +4,7 @@ travas e acesso (dados fictícios; nada chama a IA nem o banco)."""
 import unittest
 from unittest import mock
 
-from database.suppliers import _record, clean_profile, clean_stars
+from database.suppliers import _record, clean_profile
 from services import fornecedores
 from services.fornecedores import (
     _destination_parts,
@@ -41,11 +41,11 @@ def _carregados(*linhas: dict) -> list[dict]:
 
 
 LISTA = _carregados(
-    {"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito", "stars": 4, "profile": "Superior", "service": "Hotel", "contact": "nilo.example"},
-    {"name": "Palácio do Deserto", "city": "Luxor", "country": "Egito", "stars": 5, "profile": "Luxo", "service": "Hospedagem", "contact": None},
-    {"name": "Faraó Receptivo", "city": "", "country": "Egito", "stars": None, "service": "Receptivo (DMC)", "contact": None},
-    {"name": "Lisboa Tours", "city": "Lisboa", "country": "Portugal", "stars": None, "service": "Guia em português", "contact": None},
-    {"name": "Big Apple Bus", "city": "Nova York", "country": "Estados Unidos", "stars": None, "service": "Transporte com ônibus", "contact": None},
+    {"name": "Hotel Nilo Azul", "city": "Cairo", "country": "Egito", "profile": "BUDGET", "service": "Hotel", "contact": "nilo.example"},
+    {"name": "Palácio do Deserto", "city": "Luxor", "country": "Egito", "profile": "VIP", "service": "Hospedagem", "contact": None},
+    {"name": "Faraó Receptivo", "city": "", "country": "Egito", "profile": "SERVIÇOS SEPARADOS", "service": "Receptivo (DMC)", "contact": None},
+    {"name": "Lisboa Tours", "city": "Lisboa", "country": "Portugal", "service": "Guia em português", "contact": None},
+    {"name": "Big Apple Bus", "city": "Nova York", "country": "Estados Unidos", "service": "Transporte com ônibus", "contact": None},
 )
 
 
@@ -54,10 +54,10 @@ class BuscaTest(unittest.TestCase):
         encontrados, _total = search_suppliers(LISTA, destination=destino, service=servico)
         return [item["name"] for item in encontrados]
 
-    def test_pais_traz_todos_do_pais_com_mais_estrelas_antes(self):
+    def test_pais_traz_todos_do_pais_por_nome(self):
         self.assertEqual(
             self.nomes("Egito"),
-            ["Palácio do Deserto", "Hotel Nilo Azul", "Faraó Receptivo"],
+            ["Faraó Receptivo", "Hotel Nilo Azul", "Palácio do Deserto"],
         )
 
     def test_cidade_vem_antes_do_resto_do_pais(self):
@@ -69,7 +69,7 @@ class BuscaTest(unittest.TestCase):
     def test_sinonimos_de_servico(self):
         self.assertEqual(
             self.nomes("Egito", "hospedagem"),
-            ["Palácio do Deserto", "Hotel Nilo Azul"],
+            ["Hotel Nilo Azul", "Palácio do Deserto"],
         )
         self.assertEqual(self.nomes("Egito", "dmc"), ["Faraó Receptivo"])
         self.assertEqual(self.nomes("Nova York", "traslado"), ["Big Apple Bus"])
@@ -92,12 +92,12 @@ class LeituraDaIATest(unittest.TestCase):
     def test_le_o_json_e_limpa_os_campos(self):
         texto = (
             'Aqui está: {"fornecedores": [{"nome": "  Hotel  Nilo ", "cidade": "Cairo", '
-            '"pais": "Egito", "estrelas": "4", "perfil": "premium", "servico": "Hotel", "contato": ""}, '
+            '"pais": "Egito", "perfil": "premium", "servico": "Hotel", "contato": ""}, '
             '{"nome": "", "pais": "Egito"}]}'
         )
         self.assertEqual(
             _parse_suppliers(texto),
-            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "stars": 4, "profile": "Luxo", "service": "Hotel", "contact": ""}],
+            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "profile": "VIP", "service": "Hotel", "contact": ""}],
         )
 
     def test_resposta_sem_json(self):
@@ -155,19 +155,22 @@ class DuplicidadeTest(unittest.TestCase):
 
 class PerfilTest(unittest.TestCase):
     def test_nomes_e_sinonimos(self):
-        self.assertEqual(clean_profile("luxo"), "Luxo")
-        self.assertEqual(clean_profile("Premium / boutique"), "Luxo")
-        self.assertEqual(clean_profile("alto padrão"), "Superior")
-        self.assertEqual(clean_profile("intermediario"), "Intermediário")
-        self.assertEqual(clean_profile("bom custo-benefício"), "Intermediário")
-        self.assertEqual(clean_profile("grupos mais simples"), "Econômico")
-        self.assertEqual(clean_profile("ECONÔMICO"), "Econômico")
+        self.assertEqual(clean_profile("vip"), "VIP")
+        self.assertEqual(clean_profile("Premium / boutique"), "VIP")
+        self.assertEqual(clean_profile("alto padrão"), "VIP")
+        self.assertEqual(clean_profile("budget"), "BUDGET")
+        self.assertEqual(clean_profile("grupos mais simples"), "BUDGET")
+        self.assertEqual(clean_profile("ECONÔMICO"), "BUDGET")
+        self.assertEqual(clean_profile("Serviços separados"), "SERVIÇOS SEPARADOS")
+        self.assertEqual(clean_profile("venda avulsa"), "SERVIÇOS SEPARADOS")
+        # Modelo de venda vale mesmo se o texto falar em luxo.
+        self.assertEqual(clean_profile("luxo, serviços separados"), "SERVIÇOS SEPARADOS")
         self.assertIsNone(clean_profile("Não informado"))
         self.assertIsNone(clean_profile(""))
         self.assertIsNone(clean_profile(float("nan")))
 
     def test_filtro_por_perfil(self):
-        encontrados, _total = search_suppliers(LISTA, destination="Egito", profile="luxo")
+        encontrados, _total = search_suppliers(LISTA, destination="Egito", profile="vip")
         self.assertEqual([item["name"] for item in encontrados], ["Palácio do Deserto"])
         # Perfil que não é da lista não filtra (texto solto da IA).
         encontrados, _total = search_suppliers(LISTA, destination="Egito", profile="qualquer")
@@ -175,20 +178,14 @@ class PerfilTest(unittest.TestCase):
 
 
 class FichaTest(unittest.TestCase):
-    def test_estrelas(self):
-        self.assertEqual(clean_stars(4.0), 4)
-        self.assertEqual(clean_stars("5*"), 5)
-        self.assertIsNone(clean_stars(float("nan")))
-        self.assertIsNone(clean_stars(""))
-        self.assertIsNone(clean_stars(7))
-
     def test_registro_so_com_campos_da_ficha(self):
         registro = _record(
             {"name": "X", "city": float("nan"), "country": "Egito", "stars": 3.0, "service": "Hotel", "contact": "", "include": True, "preco": 100}
         )
         self.assertEqual(
             registro,
-            {"name": "X", "city": None, "country": "Egito", "stars": 3, "profile": None, "service": "Hotel", "contact": None},
+            # Estrelas saíram da ficha (016): não são mais gravadas.
+            {"name": "X", "city": None, "country": "Egito", "profile": None, "service": "Hotel", "contact": None},
         )
 
     def test_linhas_incompletas(self):
@@ -217,14 +214,13 @@ class TabelaTest(unittest.TestCase):
         # StreamlitAPIException ao abrir a ficha em branco (20/10/2026).
         tabela = supplier_frame(
             records=[{"include": True}],
-            columns=["include", "name", "city", "country", "stars", "service", "contact", "already"],
+            columns=["include", "name", "city", "country", "profile", "service", "contact", "already"],
         )
 
-        for coluna in ("name", "city", "country", "service", "contact", "already"):
+        for coluna in ("name", "city", "country", "profile", "service", "contact", "already"):
             self.assertEqual(tabela[coluna].dtype, object, coluna)
             self.assertEqual(tabela[coluna].iloc[0], "")
 
-        self.assertEqual(str(tabela["stars"].dtype), "float64")
         self.assertTrue(bool(tabela["include"].iloc[0]))
 
     def test_linhas_incluidas(self):
@@ -273,7 +269,7 @@ class FerramentaTest(unittest.TestCase):
         self.assertEqual(resultado["status"], "ok")
         # Um dado por linha, com o nome em negrito.
         self.assertIn(
-            "**Palácio do Deserto**\n- Serviço: Hospedagem\n- Local: Luxor, Egito\n- Estrelas: 5\n- Perfil: Luxo",
+            "**Palácio do Deserto**\n- Serviço: Hospedagem\n- Local: Luxor, Egito\n- Perfil: VIP",
             resultado["fornecedores"],
         )
         self.assertIn("- Contato: nilo.example", resultado["fornecedores"])
@@ -306,7 +302,7 @@ class AcessoTest(unittest.TestCase):
         _turno(pode_ver=False)
 
         with mock.patch.object(fornecedores, "_cache", (0.0, LISTA)):
-            resultado = buscar_fornecedores("Egito", "hotel", "Luxo")
+            resultado = buscar_fornecedores("Egito", "hotel", "VIP")
 
         self.assertEqual(resultado["status"], "sem_acesso")
         self.assertNotIn("fornecedores", resultado)

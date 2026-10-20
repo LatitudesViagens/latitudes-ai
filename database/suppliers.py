@@ -10,35 +10,27 @@ STATUS_PENDING = "pendente"
 STATUS_APPROVED = "aprovada"
 STATUS_REJECTED = "rejeitada"
 
-# Campos da ficha (combinados com a Isabelle em 20/10/2026; perfil na 015).
-FIELDS = ("name", "city", "country", "stars", "profile", "service", "contact")
+# Campos da ficha (combinados com a Isabelle em 20/10/2026; perfil na 015,
+# trocado na 016). Estrelas saíram da ficha na 016: a coluna continua no
+# banco, sem uso.
+FIELDS = ("name", "city", "country", "profile", "service", "contact")
 
 SUPPLIER_COLUMNS = (
-    "id,name,city,country,stars,profile,service,contact,status,source_file,"
+    "id,name,city,country,profile,service,contact,status,source_file,"
     "source_message_id,suggested_by,reviewed_by,reviewed_at,created_at"
 )
 
-# Perfis do fornecedor, do mais caro ao mais simples (mesma lista da
-# restrição da migração 015; trocar um nome exige trocar lá também).
-PROFILES = ("Luxo", "Superior", "Intermediário", "Econômico")
+# Perfis do fornecedor (mesma lista da restrição da migração 016; trocar um
+# nome exige trocar lá também).
+PROFILES = ("VIP", "BUDGET", "SERVIÇOS SEPARADOS")
 
 # Outras palavras para os mesmos perfis (sem acento, minúsculas).
 PROFILE_SYNONYMS = {
-    "Luxo": ("luxo", "luxuoso", "luxury", "premium", "boutique", "exclusivo"),
-    "Superior": ("superior", "alto padrao", "primeira linha", "executivo", "sofisticado"),
-    "Intermediário": ("intermediario", "medio", "conforto", "turistico", "custo beneficio"),
-    "Econômico": ("economico", "simples", "basico", "budget", "hostel", "estudantes", "baixo custo"),
+    # Radicais: "separado(s)/separada(s)", "avulso(s)/avulsa(s)".
+    "SERVIÇOS SEPARADOS": ("separad", "avuls", "a la carte", "sob demanda"),
+    "VIP": ("vip", "luxo", "luxuoso", "luxury", "premium", "boutique", "exclusivo", "alto padrao", "superior", "executivo"),
+    "BUDGET": ("budget", "economico", "simples", "basico", "baixo custo", "hostel", "estudantes", "custo beneficio"),
 }
-
-
-def clean_stars(value) -> int | None:
-    """Estrelas de 1 a 5; o resto (vazio, "4*", 4.0 da tabela) é tratado."""
-    try:
-        stars = int(float(str(value).strip().rstrip("*★ ").replace(",", ".")))
-    except (TypeError, ValueError):
-        return None
-
-    return stars if 1 <= stars <= 5 else None
 
 
 def _plain(text) -> str:
@@ -50,8 +42,8 @@ def _plain(text) -> str:
 
 
 def clean_profile(value) -> str | None:
-    """Um dos PROFILES ("luxo", "Premium", "econômico" → nome oficial); o
-    resto (vazio, "Não informado", texto sem perfil) vira nulo."""
+    """Um dos PROFILES ("vip", "luxo", "econômico", "avulso" → nome
+    oficial); o resto (vazio, "Não informado", texto sem perfil) vira nulo."""
     if value is None or (isinstance(value, float) and value != value):
         return None
 
@@ -64,8 +56,9 @@ def clean_profile(value) -> str | None:
         if plain == _plain(profile):
             return profile
 
-    # Do mais caro ao mais simples: "alto padrão" é Superior, não outro.
-    for profile in PROFILES:
+    # "Serviços separados" primeiro: é o modelo de venda, vale mesmo se o
+    # texto também falar em luxo ou economia.
+    for profile in PROFILE_SYNONYMS:
         if any(word in plain for word in PROFILE_SYNONYMS[profile]):
             return profile
 
@@ -78,10 +71,6 @@ def _record(supplier: dict) -> dict:
 
     for name in FIELDS:
         value = supplier.get(name)
-
-        if name == "stars":
-            record[name] = clean_stars(value)
-            continue
 
         if name == "profile":
             record[name] = clean_profile(value)
@@ -150,7 +139,7 @@ def list_approved_suppliers(client: Client) -> list[dict]:
     servidor, services/fornecedores.py)."""
     response = (
         client.table("suppliers")
-        .select("id,name,city,country,stars,profile,service,contact")
+        .select("id,name,city,country,profile,service,contact")
         .eq("status", STATUS_APPROVED)
         .limit(5000)
         .execute()
