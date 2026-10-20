@@ -33,9 +33,12 @@ def buscar_fornecedores(
     conhecimento (hotéis, receptivos, guias, transporte, restaurantes,
     atrativos, visitas técnicas etc.).
 
-    Use SEMPRE antes de pesquisar na internet quando a pessoa pedir ou
-    precisar de fornecedores, hotéis, receptivos, guias, transporte ou
-    prestadores de serviço para um destino, inclusive ao montar roteiros.
+    Use SEMPRE antes de pesquisar na internet quando a pessoa pedir
+    fornecedores, hotéis, receptivos, guias, transporte ou prestadores de
+    serviço para um destino. NÃO use ao montar ou ajustar um roteiro: o
+    roteiro nunca leva fornecedores da Latitudes; eles só aparecem quando a
+    pessoa pedir numa mensagem própria (ex.: "quais fornecedores posso usar
+    para esse roteiro?").
 
     Args:
         destino: cidade e/ou país em português, por exemplo "Cairo, Egito",
