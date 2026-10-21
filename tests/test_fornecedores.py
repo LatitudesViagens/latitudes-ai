@@ -4,7 +4,7 @@ travas e acesso (dados fictícios; nada chama a IA nem o banco)."""
 import unittest
 from unittest import mock
 
-from database.suppliers import _record, clean_profile
+from database.suppliers import _record, clean_notes, clean_option, clean_product_type, clean_profile
 from services import fornecedores
 from services.fornecedores import (
     _destination_parts,
@@ -92,12 +92,13 @@ class LeituraDaIATest(unittest.TestCase):
     def test_le_o_json_e_limpa_os_campos(self):
         texto = (
             'Aqui está: {"fornecedores": [{"nome": "  Hotel  Nilo ", "cidade": "Cairo", '
-            '"pais": "Egito", "perfil": "premium", "servico": "Hotel", "contato": ""}, '
+            '"pais": "Egito", "opcao": "1ª opção", "tipo_produto": "grupo", "perfil": "premium", '
+            '"servico": "Hotel", "contato": "", "observacao": "  aceita\\n  grupos grandes "}, '
             '{"nome": "", "pais": "Egito"}]}'
         )
         self.assertEqual(
             _parse_suppliers(texto),
-            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "profile": "VIP", "service": "Hotel", "contact": ""}],
+            [{"name": "Hotel Nilo", "city": "Cairo", "country": "Egito", "option": 1, "product_type": "GRP", "profile": "VIP", "service": "Hotel", "contact": "", "notes": "aceita\ngrupos grandes"}],
         )
 
     def test_resposta_sem_json(self):
@@ -177,6 +178,55 @@ class PerfilTest(unittest.TestCase):
         self.assertEqual(len(encontrados), 3)
 
 
+class CamposNovosTest(unittest.TestCase):
+    """Opção, Tipo de produto e Observação (migração 017)."""
+
+    def test_opcao(self):
+        self.assertEqual(clean_option("1"), 1)
+        self.assertEqual(clean_option("Opção 2"), 2)
+        self.assertEqual(clean_option(3.0), 3)
+        self.assertEqual(clean_option("op. 3"), 3)
+        self.assertIsNone(clean_option("Não informado"))
+        self.assertIsNone(clean_option(4))
+        self.assertIsNone(clean_option(float("nan")))
+
+    def test_tipo_de_produto(self):
+        self.assertEqual(clean_product_type("gRP"), "GRP")
+        self.assertEqual(clean_product_type("privativo"), "PVT")
+        self.assertEqual(clean_product_type("FIT"), "FIT")
+        self.assertEqual(clean_product_type("viajante individual"), "FIT")
+        self.assertIsNone(clean_product_type("Não informado"))
+
+    def test_observacao_livre(self):
+        self.assertEqual(clean_notes("  US$ 120 por pessoa\n  pagar 30 dias  "), "US$ 120 por pessoa\npagar 30 dias")
+        self.assertEqual(len(clean_notes("x" * 1500)), 1000)
+        self.assertIsNone(clean_notes("   "))
+
+    def test_opcao_1_vem_antes_e_filtro_por_tipo(self):
+        lista = _carregados(
+            {"name": "B Hotel", "city": "Cairo", "country": "Egito", "option": 2, "product_type": "PVT", "service": "Hotel"},
+            {"name": "A Hotel", "city": "Cairo", "country": "Egito", "option": None, "product_type": "GRP", "service": "Hotel"},
+            {"name": "C Hotel", "city": "Cairo", "country": "Egito", "option": 1, "product_type": "GRP", "service": "Hotel"},
+        )
+        encontrados, _total = search_suppliers(lista, destination="Cairo")
+        self.assertEqual([item["name"] for item in encontrados], ["C Hotel", "B Hotel", "A Hotel"])
+        encontrados, _total = search_suppliers(lista, destination="Cairo", product_type="grupo")
+        self.assertEqual([item["name"] for item in encontrados], ["C Hotel", "A Hotel"])
+
+    def test_resposta_traz_os_campos_novos(self):
+        from services.fornecedores import describe_supplier
+
+        bloco = describe_supplier(
+            {"name": "C Hotel", "city": "Cairo", "country": "Egito", "option": 1, "product_type": "GRP", "service": "Hotel", "notes": "linha 1\nlinha 2"}
+        )
+        self.assertIn("- Opção: 1\n- Tipo: GRP", bloco)
+        self.assertIn("- Observação: linha 1 / linha 2", bloco)
+
+    def test_trava_lgpd_olha_a_observacao(self):
+        texto = text_for_privacy_check([{"name": "Hotel", "notes": "falar com a cliente Maria"}])
+        self.assertIn("falar com a cliente Maria", texto)
+
+
 class FichaTest(unittest.TestCase):
     def test_registro_so_com_campos_da_ficha(self):
         registro = _record(
@@ -185,7 +235,17 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(
             registro,
             # Estrelas saíram da ficha (016): não são mais gravadas.
-            {"name": "X", "city": None, "country": "Egito", "profile": None, "service": "Hotel", "contact": None},
+            {
+                "name": "X",
+                "city": None,
+                "country": "Egito",
+                "option": None,
+                "product_type": None,
+                "profile": None,
+                "service": "Hotel",
+                "contact": None,
+                "notes": None,
+            },
         )
 
     def test_linhas_incompletas(self):

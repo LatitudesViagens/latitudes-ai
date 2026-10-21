@@ -25,9 +25,15 @@ from database.ai_usage import log_ai_usage
 from database.attachments import DOCX_MIME_TYPE, MAX_FILE_SIZE, extract_file_text
 from database.suppliers import (
     FIELDS,
+    MAX_NOTES,
+    OPTIONS,
+    PRODUCT_TYPES,
     PROFILES,
     STATUS_APPROVED,
     STATUS_REJECTED,
+    clean_notes,
+    clean_option,
+    clean_product_type,
     clean_profile,
     create_suppliers,
     list_suppliers,
@@ -48,11 +54,19 @@ COLUMNS = {
     "name": "Nome",
     "city": "Cidade",
     "country": "País",
+    "option": "Opção",
+    "product_type": "Tipo",
     "profile": "Perfil",
     "service": "Serviço",
     "contact": "Contato",
+    "notes": "Observação",
 }
-TEXT_COLUMNS = ("name", "city", "country", "profile", "service", "contact")
+TEXT_COLUMNS = ("name", "city", "country", "option", "product_type", "profile", "service", "contact", "notes")
+
+NOT_INFORMED = "Não informado"
+OPTION_CHOICES = [NOT_INFORMED, *(f"Opção {number}" for number in OPTIONS)]
+PRODUCT_TYPE_CHOICES = [NOT_INFORMED, *PRODUCT_TYPES]
+PRODUCT_TYPE_HELP = "GRP: grupo. PVT: privativo. FIT: individual."
 
 NO_PROFILE = "Não informado"
 PROFILE_OPTIONS = [NO_PROFILE, *PROFILES]
@@ -61,8 +75,9 @@ PROFILE_HELP = (
     "enxuto. SERVIÇOS SEPARADOS: serviços vendidos avulsos, fora de pacote."
 )
 CARD_NOTE = (
-    "A ficha leva só nome, cidade, país, perfil, serviço e contato da "
-    "empresa (sem preços, propostas ou contatos pessoais)."
+    "A ficha leva nome, cidade, país, opção, tipo de produto, perfil, "
+    "serviço, contato da empresa e observação (sem contatos pessoais nem "
+    "dados de clientes)."
 )
 # Qualquer planilha (Excel novo e antigo, LibreOffice, CSV/TSV), além de
 # Word, PDF e texto.
@@ -82,6 +97,18 @@ def supplier_columns_config() -> dict:
         "name": st.column_config.TextColumn(COLUMNS["name"], required=True, max_chars=200),
         "city": st.column_config.TextColumn(COLUMNS["city"], max_chars=120),
         "country": st.column_config.TextColumn(COLUMNS["country"], required=True, max_chars=80),
+        "option": st.column_config.SelectboxColumn(
+            COLUMNS["option"],
+            options=[str(number) for number in OPTIONS],
+            help="Opção 1, 2 ou 3 (a 1 é a preferida).",
+            width="small",
+        ),
+        "product_type": st.column_config.SelectboxColumn(
+            COLUMNS["product_type"],
+            options=list(PRODUCT_TYPES),
+            help=PRODUCT_TYPE_HELP,
+            width="small",
+        ),
         "profile": st.column_config.SelectboxColumn(
             COLUMNS["profile"],
             options=list(PROFILES),
@@ -89,6 +116,7 @@ def supplier_columns_config() -> dict:
         ),
         "service": st.column_config.TextColumn(COLUMNS["service"], required=True, max_chars=300),
         "contact": st.column_config.TextColumn(COLUMNS["contact"], max_chars=300),
+        "notes": st.column_config.TextColumn(COLUMNS["notes"], max_chars=MAX_NOTES),
     }
 
 
@@ -104,7 +132,11 @@ def supplier_frame(
     for name in columns:
         if name in TEXT_COLUMNS or name in {"already", "id"}:
             table[name] = [
-                "" if value is None or (isinstance(value, float) and value != value) else str(value)
+                ""
+                if value is None or (isinstance(value, float) and value != value)
+                # Opção vem do banco como número (2) ou da IA como 2.0.
+                else str(clean_option(value) or "") if name == "option"
+                else str(value)
                 for value in table[name]
             ]
             table[name] = table[name].astype("object")
@@ -140,8 +172,9 @@ def incomplete_rows(rows: list[dict]) -> int:
 
 
 def text_for_privacy_check(rows: list[dict]) -> str:
-    """Texto para a trava da LGPD. O contato geral (e-mail e telefone da
-    empresa) fica de fora: os padrões fixos o bloqueariam sempre."""
+    """Texto para a trava da LGPD. O contato da empresa (e-mail e telefone)
+    fica de fora: os padrões fixos o bloqueariam sempre. A observação, que é
+    texto livre, entra."""
     lines = [
         "LISTA DE FORNECEDORES (empresas e prestadores de serviço de viagem, "
         "não clientes):"
@@ -151,7 +184,7 @@ def text_for_privacy_check(rows: list[dict]) -> str:
         lines.append(
             " | ".join(
                 str(row.get(name) or "")
-                for name in ("name", "city", "country", "service")
+                for name in ("name", "city", "country", "service", "notes")
             )
         )
 
@@ -199,6 +232,12 @@ def _clean_row(row: dict) -> tuple:
 
         if name == "profile":
             values.append(clean_profile(value))
+        elif name == "option":
+            values.append(clean_option(value))
+        elif name == "product_type":
+            values.append(clean_product_type(value))
+        elif name == "notes":
+            values.append(clean_notes(value) or "")
         elif value is None or (isinstance(value, float) and value != value):
             values.append("")
         else:
@@ -355,6 +394,19 @@ def _show_manual_form(
             city_column, country_column = st.columns(2)
             city = city_column.text_input("Cidade", max_chars=120, key=f"{prefix}_city")
             country = country_column.text_input("País *", max_chars=80, key=f"{prefix}_country")
+            option_column, type_column = st.columns(2)
+            option = option_column.selectbox(
+                "Opção",
+                options=OPTION_CHOICES,
+                help="Opção 1, 2 ou 3 (a 1 é a preferida).",
+                key=f"{prefix}_option",
+            )
+            product_type = type_column.selectbox(
+                "Tipo de produto",
+                options=PRODUCT_TYPE_CHOICES,
+                help=PRODUCT_TYPE_HELP,
+                key=f"{prefix}_product_type",
+            )
             profile_column, contact_column = st.columns(2)
             profile = profile_column.selectbox(
                 "Perfil",
@@ -368,6 +420,13 @@ def _show_manual_form(
                 placeholder="Site, e-mail ou telefone da empresa",
                 key=f"{prefix}_contact",
             )
+            notes = st.text_area(
+                "Observação",
+                max_chars=MAX_NOTES,
+                placeholder="Qualquer anotação sobre o fornecedor",
+                height=90,
+                key=f"{prefix}_notes",
+            )
 
         rows.append(
             {
@@ -375,8 +434,11 @@ def _show_manual_form(
                 "service": service,
                 "city": city,
                 "country": country,
+                "option": clean_option(option),
+                "product_type": clean_product_type(product_type),
                 "profile": clean_profile(profile),
                 "contact": contact,
+                "notes": clean_notes(notes),
             }
         )
 
@@ -645,6 +707,8 @@ FILTER_KEYS = {
     "suppliers_filter_country": [],
     "suppliers_filter_city": [],
     "suppliers_filter_profile": [],
+    "suppliers_filter_option": [],
+    "suppliers_filter_type": [],
     "suppliers_filter_service": "",
     "suppliers_filter_name": "",
     "suppliers_filter_contact": "",
@@ -677,7 +741,7 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
     cities = sorted({str(item.get("city") or "") for item in suppliers} - {""})
 
     with st.form("suppliers_filters", border=False, enter_to_submit=True):
-        country_column, city_column, profile_column = st.columns(3)
+        country_column, city_column, option_column, type_column, profile_column = st.columns(5)
         country_column.multiselect(
             "País",
             options=countries,
@@ -689,6 +753,18 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
             options=cities,
             placeholder="Todas",
             key="suppliers_filter_city",
+        )
+        option_column.multiselect(
+            "Opção",
+            options=[f"Opção {number}" for number in OPTIONS],
+            placeholder="Todas",
+            key="suppliers_filter_option",
+        )
+        type_column.multiselect(
+            "Tipo",
+            options=list(PRODUCT_TYPES),
+            placeholder="Todos",
+            key="suppliers_filter_type",
         )
         profile_column.multiselect(
             "Perfil",
@@ -719,6 +795,8 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
     chosen_countries = st.session_state.get("suppliers_filter_country") or []
     chosen_cities = st.session_state.get("suppliers_filter_city") or []
     chosen_profiles = st.session_state.get("suppliers_filter_profile") or []
+    chosen_options = {clean_option(value) for value in st.session_state.get("suppliers_filter_option") or []}
+    chosen_types = st.session_state.get("suppliers_filter_type") or []
     service = normalize(st.session_state.get("suppliers_filter_service"))
     name = normalize(st.session_state.get("suppliers_filter_name"))
     contact = normalize(st.session_state.get("suppliers_filter_contact"))
@@ -729,6 +807,8 @@ def _filtered(suppliers: list[dict]) -> list[dict]:
         if (not chosen_countries or item.get("country") in chosen_countries)
         and (not chosen_cities or item.get("city") in chosen_cities)
         and (not chosen_profiles or item.get("profile") in chosen_profiles)
+        and (not chosen_options or clean_option(item.get("option")) in chosen_options)
+        and (not chosen_types or item.get("product_type") in chosen_types)
         and (not service or _matches_service(service, item))
         and (not name or name in normalize(item.get("name")))
         and (not contact or contact in normalize(item.get("contact")))
@@ -817,6 +897,8 @@ def _show_registered(
             "suppliers_filter_country",
             "suppliers_filter_city",
             "suppliers_filter_profile",
+            "suppliers_filter_option",
+            "suppliers_filter_type",
             "suppliers_filter_service",
             "suppliers_filter_name",
             "suppliers_filter_contact",

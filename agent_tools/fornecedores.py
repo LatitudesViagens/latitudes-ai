@@ -28,6 +28,7 @@ def buscar_fornecedores(
     destino: str,
     servico: str = "",
     perfil: str = "",
+    tipo: str = "",
 ) -> dict:
     """Consulta os fornecedores da Latitudes aprovados na base de
     conhecimento (hotéis, receptivos, guias, transporte, restaurantes,
@@ -48,6 +49,8 @@ def buscar_fornecedores(
         perfil: só se a pessoa pedir um perfil: "VIP" (alto padrão),
             "BUDGET" (grupos mais simples) ou "SERVIÇOS SEPARADOS"
             (serviços avulsos); vazio traz todos os perfis.
+        tipo: só se a pessoa pedir um tipo de produto: "GRP" (grupo), "PVT"
+            (privativo) ou "FIT" (individual); vazio traz todos.
 
     Returns:
         A lista dos fornecedores da Latitudes encontrados, ou o aviso de que
@@ -75,6 +78,7 @@ def buscar_fornecedores(
         destination=destino,
         service=servico,
         profile=perfil,
+        product_type=tipo,
     )
 
     if not found:
@@ -109,7 +113,9 @@ def buscar_fornecedores(
             "as linhas se juntam numa só na tela), e uma linha em branco "
             "entre um fornecedor e outro. Nunca junte os dados numa linha só. "
             "Use só os dados listados; "
-            "não invente contato, perfil nem serviços. Termine oferecendo "
+            "não invente contato, perfil, opção, tipo, observação nem "
+            "serviços. A Opção 1 é a preferida: mantenha a ordem recebida. "
+            "Termine oferecendo "
             "buscar na internet outros fornecedores do local; só pesquise "
             "se a pessoa pedir ou aceitar e, nesse caso, apresente o "
             "resultado em seção separada, marcado como 'encontrados na "

@@ -13,12 +13,33 @@ STATUS_REJECTED = "rejeitada"
 # Campos da ficha (combinados com a Isabelle em 20/10/2026; perfil na 015,
 # trocado na 016). Estrelas saíram da ficha na 016: a coluna continua no
 # banco, sem uso.
-FIELDS = ("name", "city", "country", "profile", "service", "contact")
+FIELDS = (
+    "name",
+    "city",
+    "country",
+    "option",
+    "product_type",
+    "profile",
+    "service",
+    "contact",
+    "notes",
+)
 
 SUPPLIER_COLUMNS = (
-    "id,name,city,country,profile,service,contact,status,source_file,"
-    "source_message_id,suggested_by,reviewed_by,reviewed_at,created_at"
+    "id,name,city,country,option,product_type,profile,service,contact,notes,"
+    "status,source_file,source_message_id,suggested_by,reviewed_by,"
+    "reviewed_at,created_at"
 )
+
+# Opção 1, 2 ou 3 e tipo de produto (migração 017).
+OPTIONS = (1, 2, 3)
+PRODUCT_TYPES = ("GRP", "PVT", "FIT")
+PRODUCT_TYPE_SYNONYMS = {
+    "GRP": ("grp", "grupo", "grupos", "group"),
+    "PVT": ("pvt", "privativo", "privado", "private", "exclusivo"),
+    "FIT": ("fit", "individual", "independente"),
+}
+MAX_NOTES = 1000
 
 # Perfis do fornecedor (mesma lista da restrição da migração 016; trocar um
 # nome exige trocar lá também).
@@ -65,6 +86,48 @@ def clean_profile(value) -> str | None:
     return None
 
 
+def _is_empty(value) -> bool:
+    # Célula vazia da tabela de edição chega como NaN (float).
+    return value is None or (isinstance(value, float) and value != value)
+
+
+def clean_option(value) -> int | None:
+    """Opção 1, 2 ou 3 ("1", "Opção 2", "op. 3", 2.0 da tabela); o resto
+    vira nulo."""
+    if _is_empty(value) or isinstance(value, bool):
+        return None
+
+    import re
+
+    match = re.search(r"\d+", str(value))
+    number = int(match.group(0)) if match else None
+    return number if number in OPTIONS else None
+
+
+def clean_product_type(value) -> str | None:
+    """GRP, PVT ou FIT ("grupo", "privativo", "individual" também valem)."""
+    if _is_empty(value):
+        return None
+
+    plain = _plain(value)
+
+    for product_type, words in PRODUCT_TYPE_SYNONYMS.items():
+        if plain == product_type.lower() or any(word in plain.split() for word in words):
+            return product_type
+
+    return None
+
+
+def clean_notes(value) -> str | None:
+    """Observação livre: mantém as quebras de linha, tira espaços sobrando."""
+    if _is_empty(value):
+        return None
+
+    lines = [" ".join(line.split()) for line in str(value).strip().splitlines()]
+    text = "\n".join(lines).strip()
+    return text[:MAX_NOTES] or None
+
+
 def _record(supplier: dict) -> dict:
     """Só os campos da ficha, limpos (texto vazio vira nulo)."""
     record = {}
@@ -74,6 +137,18 @@ def _record(supplier: dict) -> dict:
 
         if name == "profile":
             record[name] = clean_profile(value)
+            continue
+
+        if name == "option":
+            record[name] = clean_option(value)
+            continue
+
+        if name == "product_type":
+            record[name] = clean_product_type(value)
+            continue
+
+        if name == "notes":
+            record[name] = clean_notes(value)
             continue
 
         # Célula vazia da tabela de edição chega como NaN (float).
@@ -139,7 +214,7 @@ def list_approved_suppliers(client: Client) -> list[dict]:
     servidor, services/fornecedores.py)."""
     response = (
         client.table("suppliers")
-        .select("id,name,city,country,profile,service,contact")
+        .select("id,name,city,country,option,product_type,profile,service,contact,notes")
         .eq("status", STATUS_APPROVED)
         .limit(5000)
         .execute()
